@@ -4,7 +4,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 declare_id!("YourProgramIdHere");
 
 #[program]
-pub mod fam_presale_contract {
+pub mod tok_presale_contract {
     use super::*;
 
     // Initialize presale and vesting parameters
