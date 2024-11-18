@@ -34,7 +34,37 @@ pub mod fam_presale_contract {
         presale_account.vesting_interval = vesting_interval;
     
         Ok(())
-    }    
+    }
+    
+    pub fn update_presale_params(
+        ctx: Context<UpdatePresaleParams>,
+        new_price: Option<u64>,
+        new_discount_percentage: Option<u64>,
+        new_min_buy_amount: Option<u64>,
+        new_max_buy_amount: Option<u64>,
+        new_hard_cap: Option<u64>,
+    ) -> ProgramResult {
+        let presale_account = &mut ctx.accounts.presale_account;
+    
+        // Update parameters if provided
+        if let Some(price) = new_price {
+            presale_account.price = price;
+        }
+        if let Some(discount) = new_discount_percentage {
+            presale_account.discount_percentage = discount;
+        }
+        if let Some(min_buy) = new_min_buy_amount {
+            presale_account.min_buy_amount_sol = min_buy;
+        }
+        if let Some(max_buy) = new_max_buy_amount {
+            presale_account.max_buy_amount_sol = max_buy;
+        }
+        if let Some(hard_cap) = new_hard_cap {
+            presale_account.hard_cap_sol = hard_cap;
+        }
+    
+        Ok(())
+    }
 
     #[account]
     pub struct UserVesting {
@@ -63,7 +93,16 @@ pub mod fam_presale_contract {
         // Calculate total cost in USDC
         let total_cost_in_usdc = amount.checked_mul(presale_account.price).ok_or(ErrorCode::MathOverflow)?;
     
-        // Calculate total cost in SOL equivalent
+        // Calculate the discounted token price (if applicable)
+        let discounted_price = presale_account.price
+        .price
+        .checked_mul(100 - presale_account.discount_percentage)
+        .ok_or(ErrorCode::MathOverflow)?
+        .checked_div(100)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+        // Calculate total cost in USDC and SOL equivalent
+        let total_cost_in_usdc = amount.checked_mul(discounted_price).ok_or(ErrorCode::MathOverflow)?;
         let total_cost_in_sol = total_cost_in_usdc
             .checked_mul(10u64.pow(9)) // Scale to lamports
             .ok_or(ErrorCode::MathOverflow)?
@@ -122,9 +161,9 @@ pub mod fam_presale_contract {
     
         // Update user vesting and total USDC-equivalent sales
         user_vesting.total_amount += amount;
-        user_vesting.total_purchased_sol = user_vesting.total_purchased_sol.checked_add(total_cost_in_usdc_equivalent).ok_or(ErrorCode::MathOverflow)?;
-        presale_account.total_sold_sol_equivalent = presale_account.total_sold_sol_equivalent.checked_add(total_cost_in_usdc_equivalent).ok_or(ErrorCode::MathOverflow)?;
-    
+        user_vesting.total_purchased_sol = user_vesting.total_purchased_sol.checked_add(total_cost_in_usdc).ok_or(ErrorCode::MathOverflow)?;
+        presale_account.total_sold_sol_equivalent = presale_account.total_sold_sol_equivalent.checked_add(total_cost_in_usdc).ok_or(ErrorCode::MathOverflow)?;
+
         Ok(())
     }    
     
@@ -166,7 +205,6 @@ pub mod fam_presale_contract {
 
         Ok(())
     }
-
 
     // Helper to calculate vested amount
     fn calculate_vested_amount(
@@ -226,7 +264,8 @@ pub mod fam_presale_contract {
         pub presale_start: i64,
         pub presale_end: i64,
         pub public_sale_start: i64,
-        pub price: u64,                  // Price in USDC
+        pub price: u64,                  // Price in USDC without discount
+        pub discount_percentage: u64,   // Discount percentage during presale
         pub max_allocation: u64,
         pub cliff_period: i64,
         pub vesting_period: i64,
@@ -254,6 +293,46 @@ pub mod fam_presale_contract {
             )
         }
     }
+
+    pub fn update_presale_discount(
+        ctx: Context<UpdatePresaleParams>,
+        new_price: Option<u64>,
+        new_discount_percentage: Option<u64>,
+    ) -> ProgramResult {
+        let presale_account = &mut ctx.accounts.presale_account;
+    
+        // Validate and update price directly
+        if let Some(price) = new_price {
+            if price == 0 {
+                return Err(ErrorCode::InvalidPrice.into());
+            }
+            presale_account.price = price;
+    
+            // Recalculate the discount percentage (based on the original price, if any)
+            if presale_account.discount_percentage > 0 {
+                let original_price = presale_account.price.checked_mul(100).ok_or(ErrorCode::MathOverflow)?
+                    .checked_div(100 - presale_account.discount_percentage).ok_or(ErrorCode::MathOverflow)?;
+                presale_account.discount_percentage = (100 - price.checked_mul(100).ok_or(ErrorCode::MathOverflow)?
+                    .checked_div(original_price).ok_or(ErrorCode::MathOverflow)?) as u64;
+            }
+        }
+    
+        // Validate and update discount percentage
+        if let Some(discount) = new_discount_percentage {
+            if discount > 100 {
+                return Err(ErrorCode::InvalidDiscountPercentage.into());
+            }
+            presale_account.discount_percentage = discount;
+    
+            // Recalculate the price based on the discount
+            presale_account.price = presale_account.price.checked_mul(100 - discount)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(100)
+                .ok_or(ErrorCode::MathOverflow)?;
+        }
+    
+        Ok(())
+    }    
 
     pub fn distribute_initial_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
         let user_vesting = &mut ctx.accounts.user_vesting;
@@ -286,6 +365,13 @@ pub mod fam_presale_contract {
         user_vesting.airdrops_completed = 1;
 
         Ok(())
+    }
+
+    #[derive(Accounts)]
+    pub struct UpdatePresaleParams<'info> {
+        #[account(mut, has_one = authority)]
+        pub presale_account: Account<'info, PresaleAccount>,
+        pub authority: Signer<'info>, // Admin account
     }
 
     // Define the `Claim` context for claiming tokens
@@ -402,5 +488,13 @@ pub mod fam_presale_contract {
         ExceedsMaximumPurchase,
         #[msg("Presale hard cap has been reached.")]
         HardCapReached,
+        #[msg("Unauthorized access.")]
+        UnauthorizedAccess,
+        #[msg("Invalid parameter value.")]
+        InvalidParameterValue,
+        #[msg("Invalid discount percentage. Must be <= 100.")]
+        InvalidDiscountPercentage,
+        #[msg("Invalid price. Price must be greater than zero.")]
+        InvalidPrice,
     }
 }
