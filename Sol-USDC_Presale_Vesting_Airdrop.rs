@@ -4,7 +4,7 @@ use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 declare_id!("YourProgramIdHere");
 
 #[program]
-pub mod main_presale_contract {
+pub mod fam_presale_contract {
     use super::*;
 
     // Initialize presale and vesting parameters
@@ -211,9 +211,10 @@ pub struct PresaleAccount {
     pub cliff_period: i64,
     pub vesting_period: i64,
     pub vesting_interval: i64,
+    pub total_airdrop_periods: u8, // Total number of airdrop periods (e.g., 10 or 12)
+    pub airdrop_percentages: Vec<u64>, // Percentages for each airdrop period
     pub total_sold_in_sol: u64,    // Track sales in SOL
     pub total_sold_in_usdc: u64,   // Track sales in USDC
-    pub sol_to_usdc_feed: Pubkey,  // Oracle price feed account for SOL to USDC
 }
 
 impl<'info> Claim<'info> {
@@ -231,16 +232,25 @@ impl<'info> Claim<'info> {
 
 pub fn distribute_initial_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
     let user_vesting = &mut ctx.accounts.user_vesting;
+    let presale_account = &ctx.accounts.presale_account;
     let clock = Clock::get()?;
     let current_time = clock.unix_timestamp;
 
     // Ensure presale has ended
-    if current_time < user_vesting.start_time {
+    if current_time < presale_account.presale_end {
         return Err(ErrorCode::PresaleNotEnded.into());
     }
 
-    // Distribute 10% of the total purchase amount
-    let initial_airdrop = user_vesting.total_amount / 10;
+    // Calculate initial airdrop percentage
+    let initial_percentage = *presale_account.airdrop_percentages.get(0).ok_or(ErrorCode::AirdropConfigurationError)?;
+    let initial_airdrop = user_vesting
+        .total_amount
+        .checked_mul(initial_percentage)
+        .ok_or(ErrorCode::MathOverflow)?
+        .checked_div(100)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+    // Transfer initial airdrop
     token::transfer(
         ctx.accounts.into_transfer_context(),
         initial_airdrop,
@@ -270,6 +280,7 @@ pub struct DistributeAirdrop<'info> {
     #[account(mut)]
     pub user_vesting: Account<'info, UserVesting>,
     #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>,
     pub token_program: Program<'info, Token>,
 }
 
@@ -294,27 +305,43 @@ pub struct Purchase<'info> {
 
 pub fn distribute_monthly_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
     let user_vesting = &mut ctx.accounts.user_vesting;
+    let presale_account = &ctx.accounts.presale_account;
     let clock = Clock::get()?;
     let current_time = clock.unix_timestamp;
 
     // Ensure at least one month has passed since the last airdrop
-    let months_elapsed = (current_time - user_vesting.start_time) / (30 * 24 * 60 * 60);
+    let months_elapsed = (current_time - user_vesting.start_time) / presale_account.vesting_interval;
     if months_elapsed as u8 <= user_vesting.airdrops_completed {
         return Err(ErrorCode::AirdropNotDue.into());
     }
-    if user_vesting.airdrops_completed >= 10 {
+
+    // Ensure airdrops do not exceed total periods
+    if user_vesting.airdrops_completed >= presale_account.total_airdrop_periods {
         return Err(ErrorCode::AirdropCompleted.into());
     }
 
-    // Calculate the next 10% to distribute
-    let next_airdrop = user_vesting.total_amount / 10;
+    // Get the percentage for the current airdrop
+    let current_percentage = *presale_account
+        .airdrop_percentages
+        .get(user_vesting.airdrops_completed as usize)
+        .ok_or(ErrorCode::AirdropConfigurationError)?;
+
+    // Calculate the airdrop amount
+    let airdrop_amount = user_vesting
+        .total_amount
+        .checked_mul(current_percentage)
+        .ok_or(ErrorCode::MathOverflow)?
+        .checked_div(100)
+        .ok_or(ErrorCode::MathOverflow)?;
+
+    // Transfer the airdrop amount
     token::transfer(
         ctx.accounts.into_transfer_context(),
-        next_airdrop,
+        airdrop_amount,
     )?;
 
     // Update claimed amount and airdrop count
-    user_vesting.claimed_amount += next_airdrop;
+    user_vesting.claimed_amount += airdrop_amount;
     user_vesting.airdrops_completed += 1;
 
     Ok(())
@@ -342,4 +369,6 @@ pub enum ErrorCode {
     InvalidPaymentMethod,
     #[msg("Price feed is unavailable.")]
     PriceFeedUnavailable,
+    #[msg("Airdrop configuration error.")]
+    AirdropConfigurationError,
 }
