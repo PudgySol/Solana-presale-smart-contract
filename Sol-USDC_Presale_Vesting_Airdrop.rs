@@ -1,10 +1,10 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("YourProgramIdHere");
+declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
 
 #[program]
-pub mod tok_presale_contract {
+pub mod fam_presale_contract {
     use super::*;
 
     // Initialize presale and vesting parameters
@@ -248,15 +248,6 @@ pub mod tok_presale_contract {
         #[account(mut)]
         pub user_vesting: Account<'info, UserVesting>,
         pub presale_account: Account<'info, PresaleAccount>,
-    }
-
-
-    #[account]
-    pub struct UserVesting {
-        pub total_amount: u64,           // Total tokens purchased
-        pub claimed_amount: u64,         // Tokens already claimed
-        pub start_time: i64,             // Presale end time
-        pub airdrops_completed: u8,      // Number of airdrops already distributed
     }
 
     #[account]
