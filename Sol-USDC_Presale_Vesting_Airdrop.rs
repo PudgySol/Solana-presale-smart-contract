@@ -83,9 +83,16 @@ pub mod fam_presale_contract {
     }
 
     // Purchase tokens with vesting
-    pub fn purchase(ctx: Context<Purchase>, amount: u64, payment_method: PaymentMethod) -> ProgramResult {
+    pub fn purchase(
+        ctx: Context<Purchase>, 
+        amount: u64, 
+        precomputed_cost: u64, 
+        payment_method: PaymentMethod
+    ) -> ProgramResult {
         let presale_account = &mut ctx.accounts.presale_account;
         let user_vesting = &mut ctx.accounts.user_vesting;
+    
+        // Get the current timestamp
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
     
@@ -100,7 +107,7 @@ pub mod fam_presale_contract {
         // Fetch SOL to USDC conversion rate
         let sol_to_usdc_rate = get_sol_to_usdc_rate(&ctx.accounts.sol_to_usdc_feed)?;
     
-        // Calculate discounted token price (fix typo: removed `.price.price`)
+        // Calculate the discounted price (on-chain check for validation)
         let discounted_price = presale_account
             .price
             .checked_mul(100 - presale_account.discount_percentage)
@@ -108,10 +115,17 @@ pub mod fam_presale_contract {
             .checked_div(100)
             .ok_or(ErrorCode::MathOverflow)?;
     
-        // Calculate total cost in USDC
-        let total_cost_in_usdc = amount.checked_mul(discounted_price).ok_or(ErrorCode::MathOverflow)?;
+        // Calculate the total cost in USDC (on-chain check for validation)
+        let total_cost_in_usdc = amount
+            .checked_mul(discounted_price)
+            .ok_or(ErrorCode::MathOverflow)?;
     
-        // Calculate total cost in SOL equivalent
+        // Verify that the precomputed cost matches the on-chain calculation
+        if total_cost_in_usdc != precomputed_cost {
+            return Err(ErrorCode::InvalidPrecomputedCost.into());
+        }
+    
+        // Calculate the total cost in SOL equivalent (for SOL purchases)
         let total_cost_in_sol = total_cost_in_usdc
             .checked_mul(10u64.pow(9)) // Scale to lamports
             .ok_or(ErrorCode::MathOverflow)?
@@ -141,6 +155,7 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::HardCapReached.into());
         }
     
+        // Payment handling
         match payment_method {
             PaymentMethod::SOL => {
                 // Ensure buyer sent enough SOL
@@ -148,12 +163,12 @@ pub mod fam_presale_contract {
                     return Err(ErrorCode::InsufficientFunds.into());
                 }
     
-                // Transfer SOL to the program's PDA (fix authority issue)
+                // Transfer SOL to the program's PDA
                 let program_pda = ctx.accounts.presale_account.to_account_info().key;
                 **ctx.accounts.buyer.to_account_info().try_borrow_mut_lamports()? -= total_cost_in_sol;
                 **program_pda.try_borrow_mut_lamports()? += total_cost_in_sol;
     
-                // Update total sales
+                // Update total sales in SOL
                 presale_account.total_sold_in_sol = presale_account
                     .total_sold_in_sol
                     .checked_add(amount)
@@ -166,13 +181,13 @@ pub mod fam_presale_contract {
                     return Err(ErrorCode::InsufficientFunds.into());
                 }
     
-                // Transfer USDC to program's token account using PDA (fix authority issue)
+                // Transfer USDC to program's token account
                 token::transfer(
                     ctx.accounts.into_transfer_to_program_context(),
                     total_cost_in_usdc,
                 )?;
     
-                // Update total sales
+                // Update total sales in USDC
                 presale_account.total_sold_in_usdc = presale_account
                     .total_sold_in_usdc
                     .checked_add(amount)
@@ -180,8 +195,11 @@ pub mod fam_presale_contract {
             }
         }
     
-        // Update user vesting and total USDC-equivalent sales
-        user_vesting.total_amount += amount;
+        // Update user vesting and presale totals
+        user_vesting.total_amount = user_vesting
+            .total_amount
+            .checked_add(amount)
+            .ok_or(ErrorCode::MathOverflow)?;
         user_vesting.total_purchased_sol = user_vesting
             .total_purchased_sol
             .checked_add(total_cost_in_usdc)
@@ -192,6 +210,11 @@ pub mod fam_presale_contract {
             .ok_or(ErrorCode::MathOverflow)?;
     
         Ok(())
+    }    
+
+    // Utility function to derive the program's PDA
+    fn derive_presale_pda(program_id: &Pubkey, seed: &[u8]) -> Pubkey {
+        Pubkey::find_program_address(&[seed], program_id).0
     }
     
     // Validation function to ensure oracle feed authenticity
@@ -206,6 +229,55 @@ pub mod fam_presale_contract {
         let price_data = pyth_client::load_price_feed_from_account(price_feed)?;
         let price = price_data.get_current_price().ok_or(ErrorCode::PriceFeedUnavailable)?;
         Ok(price.price as u64)
+    }
+
+    // Batch airdrop distribution to save compute units
+    pub fn distribute_airdrops_batch(
+        ctx: Context<BatchDistributeAirdrops>, 
+        users: Vec<UserDistribution>
+    ) -> ProgramResult {
+        let presale_account = &ctx.accounts.presale_account;
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+
+        // Ensure presale has ended
+        if current_time < presale_account.presale_end {
+            return Err(ErrorCode::PresaleNotEnded.into());
+        }
+
+        for user in users.iter() {
+            let user_vesting = &mut ctx.remaining_accounts[user.user_vesting_index]; // Dynamically load user vesting account
+            let airdrop_percentage = *presale_account
+                .airdrop_percentages
+                .get(user.airdrop_index as usize)
+                .ok_or(ErrorCode::AirdropConfigurationError)?;
+
+            // Calculate the airdrop amount
+            let airdrop_amount = user_vesting
+                .total_amount
+                .checked_mul(airdrop_percentage)
+                .ok_or(ErrorCode::MathOverflow)?
+                .checked_div(100)
+                .ok_or(ErrorCode::MathOverflow)?;
+
+            // Transfer the airdrop tokens
+            token::transfer(
+                ctx.accounts.into_transfer_context(&user_vesting),
+                airdrop_amount,
+            )?;
+
+            // Update the user vesting account
+            user_vesting.claimed_amount += airdrop_amount;
+            user_vesting.airdrops_completed += 1;
+        }
+
+        Ok(())
+    }
+
+    #[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+    pub struct UserDistribution {
+        pub user_vesting_index: usize, // Index in the remaining accounts array
+        pub airdrop_index: u8,         // Index of the current airdrop percentage
     }
 
     // Claim vested tokens
@@ -291,13 +363,13 @@ pub mod fam_presale_contract {
         pub presale_end: i64,
         pub public_sale_start: i64,
         pub price: u64,                  // Price in USDC without discount
-        pub discount_percentage: u64,   // Discount percentage during presale
+        pub discount_percentage: u32,   // Discount percentage during presale
         pub max_allocation: u64,
         pub cliff_period: i64,
         pub vesting_period: i64,
         pub vesting_interval: i64,
         pub total_airdrop_periods: u8,
-        pub airdrop_percentages: Vec<u64>,
+        pub airdrop_percentages: Vec<u8>,
         pub total_sold_in_sol: u64,      // Total sold in SOL
         pub total_sold_in_usdc: u64,     // Total sold in USDC
         pub sol_to_usdc_feed: Pubkey,    // Oracle price feed for SOL to USDC
