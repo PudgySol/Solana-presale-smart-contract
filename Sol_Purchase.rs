@@ -1,6 +1,4 @@
 use anchor_lang::prelude::*;
-use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
-use pyth_sol_sdk::price_update::PriceUpdateV2;
 use arrayref::array_ref;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
@@ -50,7 +48,6 @@ pub mod fam_presale_contract {
     pub fn update_presale_params(
         ctx: Context<UpdatePresaleParams>,
         new_price: Option<u64>,
-        new_discount_percentage: Option<u64>,
         new_min_buy_amount: Option<u64>,
         new_max_buy_amount: Option<u64>,
         new_hard_cap: Option<u64>,
@@ -60,9 +57,6 @@ pub mod fam_presale_contract {
         // Update parameters if provided
         if let Some(price) = new_price {
             presale_account.price = price;
-        }
-        if let Some(discount) = new_discount_percentage {
-            presale_account.discount_percentage = discount;
         }
         if let Some(min_buy) = new_min_buy_amount {
             presale_account.min_buy_amount_sol = min_buy;
@@ -94,11 +88,7 @@ pub mod fam_presale_contract {
         pub cost_in_sol: Option<u64>,  // Cost in SOL equivalent (in lamports, if applicable)
     }
 
-    pub fn purchase(
-        ctx: Context<Purchase>, 
-        amount: u64, 
-        precomputed_cost: u64
-    ) -> ProgramResult {
+    pub fn purchase(ctx: Context<Purchase>, amount: u64) -> ProgramResult {
         let presale_account = &mut ctx.accounts.presale_account;
         let user_vesting = &mut ctx.accounts.user_vesting;
     
@@ -111,63 +101,36 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::SaleNotActive.into());
         }
     
-        // Validate the oracle feed for SOL/USDC price
-        validate_oracle_feed(&ctx.accounts.sol_to_usdc_feed)?;
-    
-        // Fetch the SOL to USDC conversion rate from the oracle
-        let sol_to_usdc_rate = get_sol_to_usdc_rate(&ctx.accounts.sol_to_usdc_feed)?;
-    
-        // Calculate the discounted token price
-        let discounted_price = presale_account
-            .price
-            .checked_mul(100 - presale_account.discount_percentage)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(100)
+        // Calculate total cost in SOL (lamports)
+        let total_cost_in_sol = amount
+            .checked_mul(presale_account.price)
             .ok_or(ErrorCode::MathOverflow)?;
     
-        // Calculate the total cost in USDC
-        let total_cost_in_usdc = amount
-            .checked_mul(discounted_price)
-            .ok_or(ErrorCode::MathOverflow)?;
-    
-        // Verify the precomputed cost passed by the client matches the on-chain calculation
-        if total_cost_in_usdc != precomputed_cost {
-            return Err(ErrorCode::InvalidPrecomputedCost.into());
+        // Ensure the buyer has enough SOL
+        if **ctx.accounts.buyer.to_account_info().lamports.borrow() < total_cost_in_sol {
+            return Err(ErrorCode::InsufficientFunds.into());
         }
     
-        // Calculate the total cost in SOL equivalent
-        let total_cost_in_sol = total_cost_in_usdc
-            .checked_mul(10u64.pow(9)) // Convert to lamports (1 SOL = 10^9 lamports)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(sol_to_usdc_rate)
-            .ok_or(ErrorCode::MathOverflow)?;
-    
         // Ensure the purchase is within allowed limits
-        if total_cost_in_usdc < presale_account.min_buy_amount_sol {
+        if total_cost_in_sol < presale_account.min_buy_amount_sol {
             return Err(ErrorCode::BelowMinimumPurchase.into());
         }
         if user_vesting
             .total_purchased_sol
-            .checked_add(total_cost_in_usdc)
+            .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?
             > presale_account.max_buy_amount_sol
         {
             return Err(ErrorCode::ExceedsMaximumPurchase.into());
         }
     
-        // Ensure the presale hard cap is not exceeded
         if presale_account
-            .total_sold_sol_equivalent
-            .checked_add(total_cost_in_usdc)
+            .total_sold_sol
+            .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?
             > presale_account.hard_cap_sol
         {
             return Err(ErrorCode::HardCapReached.into());
-        }
-    
-        // Ensure the buyer has enough SOL to pay
-        if **ctx.accounts.buyer.to_account_info().lamports.borrow() < total_cost_in_sol {
-            return Err(ErrorCode::InsufficientFunds.into());
         }
     
         // Transfer SOL to the program's PDA
@@ -176,8 +139,8 @@ pub mod fam_presale_contract {
         **program_pda.try_borrow_mut_lamports()? += total_cost_in_sol;
     
         // Update total sales and user metrics
-        presale_account.total_sold_in_sol = presale_account
-            .total_sold_in_sol
+        presale_account.total_sold_sol = presale_account
+            .total_sold_sol
             .checked_add(amount)
             .ok_or(ErrorCode::MathOverflow)?;
         user_vesting.total_amount = user_vesting
@@ -186,11 +149,7 @@ pub mod fam_presale_contract {
             .ok_or(ErrorCode::MathOverflow)?;
         user_vesting.total_purchased_sol = user_vesting
             .total_purchased_sol
-            .checked_add(total_cost_in_usdc)
-            .ok_or(ErrorCode::MathOverflow)?;
-        presale_account.total_sold_sol_equivalent = presale_account
-            .total_sold_sol_equivalent
-            .checked_add(total_cost_in_usdc)
+            .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
     
         // Emit the purchase event
@@ -206,20 +165,6 @@ pub mod fam_presale_contract {
     // Utility function to derive the program's PDA
     fn derive_presale_pda(program_id: &Pubkey, seed: &[u8]) -> Pubkey {
         Pubkey::find_program_address(&[seed], program_id).0
-    }
-    
-    // Validation function to ensure oracle feed authenticity
-    fn validate_oracle_feed(oracle_feed: &AccountInfo) -> ProgramResult {
-        if !oracle_feed.owner.eq(&pyth_client::ID) {
-            return Err(ErrorCode::UnauthorizedAccess.into());
-        }
-        Ok(())
-    }
-    
-    fn get_sol_to_usdc_rate(price_feed: &AccountInfo) -> Result<u64, ProgramError> {
-        let price_data = pyth_client::load_price_feed_from_account(price_feed)?;
-        let price = price_data.get_current_price().ok_or(ErrorCode::PriceFeedUnavailable)?;
-        Ok(price.price as u64)
     }
 
     // Batch airdrop distribution to save compute units
@@ -364,20 +309,17 @@ pub mod fam_presale_contract {
         pub presale_start: i64,
         pub presale_end: i64,
         pub public_sale_start: i64,
-        pub price: u64,                  // Price in USDC without discount
-        pub discount_percentage: u32,   // Discount percentage during presale
+        pub price: u64,              // Price per token in SOL (lamports)
         pub max_allocation: u64,
         pub cliff_period: i64,
         pub vesting_period: i64,
         pub vesting_interval: i64,
         pub total_airdrop_periods: u8,
         pub airdrop_percentages: Vec<u8>,
-        pub total_sold_in_sol: u64,      // Total sold in SOL
-        pub sol_to_usdc_feed: Pubkey,    // Oracle price feed for SOL to USDC
+        pub total_sold_sol: u64,         // Total tokens sold
         pub min_buy_amount_sol: u64,     // Minimum SOL amount per purchase
         pub max_buy_amount_sol: u64,     // Maximum SOL amount per user
-        pub hard_cap_sol: u64,           // Maximum SOL equivalent for the entire presale
-        pub total_sold_sol_equivalent: u64, // Track total SOL-equivalent sales
+        pub hard_cap_sol: u64,           // Maximum SOL for the entire presale
     }
 
     impl<'info> Claim<'info> {
@@ -502,11 +444,7 @@ pub mod fam_presale_contract {
         pub user_vesting: Account<'info, UserVesting>,
         #[account(mut)]
         pub buyer: Signer<'info>,
-        pub token_program: Program<'info, Token>,
         pub system_program: Program<'info, System>,
-        /// CHECK: This is the oracle price feed account
-        #[account(mut)]
-        pub sol_to_usdc_feed: AccountInfo<'info>, // Oracle price feed for SOL to USDC
     }
 
     pub fn distribute_monthly_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
