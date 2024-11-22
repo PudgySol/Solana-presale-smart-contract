@@ -4,7 +4,7 @@ use pyth_sol_sdk::price_update::PriceUpdateV2;
 use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
+declare_id!("Contract");
 
 #[program]
 pub mod fam_presale_contract {
@@ -35,6 +35,10 @@ pub mod fam_presale_contract {
         }
     
         if vesting_period == 0 || vesting_interval == 0 {
+            return Err(ErrorCode::InvalidVestingParameters.into());
+        }
+
+        if vesting_interval > vesting_period {
             return Err(ErrorCode::InvalidVestingParameters.into());
         }
     
@@ -134,7 +138,7 @@ pub mod fam_presale_contract {
             &ctx.accounts.sol_to_usd_oracle,
             presale_account.manual_price_override,
         )?;
-    
+
         // Calculate the token price in SOL
         let token_price_in_sol = presale_account
             .price
@@ -376,6 +380,7 @@ pub mod fam_presale_contract {
             buyer: ctx.accounts.buyer.key(),
             refund_amount,
             refund_sol,
+            remaining_tokens: refundable_tokens - refund_amount, 
         });
     
         Ok(())
@@ -393,9 +398,17 @@ pub mod fam_presale_contract {
                 }
             }
         }
+    
         // Fallback to manual price override if oracle fails or returns invalid data
-        manual_price_override.ok_or(ErrorCode::PriceFeedUnavailable)
-    }
+        if let Some(price) = manual_price_override {
+            if price == 0 || price > 1_000_000 { // Validate fallback price
+                return Err(ErrorCode::InvalidPrice.into());
+            }
+            return Ok(price);
+        }
+    
+        Err(ErrorCode::PriceFeedUnavailable.into())
+    }    
     
     pub fn update_manual_price_override(
         ctx: Context<UpdateManualPriceOverride>,
@@ -410,7 +423,7 @@ pub mod fam_presale_contract {
     
         // Validate the manual price override
         if let Some(price) = new_price {
-            if price == 0 {
+            if price == 0 || price > 1_000_000 { // Ensure price is non-zero and within reasonable bounds
                 return Err(ErrorCode::InvalidPrice.into());
             }
         }
@@ -426,7 +439,7 @@ pub mod fam_presale_contract {
         });
     
         Ok(())
-    }       
+    }           
     
     fn calculate_sol_price(
         amount: u64,
@@ -447,6 +460,7 @@ pub mod fam_presale_contract {
         pub buyer: Pubkey,       // User's wallet public key
         pub refund_amount: u64,  // Number of tokens refunded
         pub refund_sol: u64,     // Amount of SOL refunded
+        pub remaining_tokens: u64, 
     }
     
     #[derive(Accounts)]
