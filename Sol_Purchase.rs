@@ -186,46 +186,60 @@ pub mod fam_presale_contract {
 
     // Batch airdrop distribution to save compute units
     pub fn distribute_airdrops_batch(
-        ctx: Context<BatchDistributeAirdrops>, 
-        users: Vec<UserDistribution>
+        ctx: Context<BatchDistributeAirdrops>,
+        users: Vec<UserDistribution>,
     ) -> ProgramResult {
         let presale_account = &ctx.accounts.presale_account;
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
-
+    
         // Ensure presale has ended
         if current_time < presale_account.presale_end {
             return Err(ErrorCode::PresaleNotEnded.into());
         }
-
+    
+        // Validate users and airdrop configurations
         for user in users.iter() {
-            let user_vesting = &mut ctx.remaining_accounts[user.user_vesting_index]; // Dynamically load user vesting account
-            let airdrop_percentage = *presale_account
+            if user.airdrop_index as usize >= presale_account.airdrop_percentages.len() {
+                return Err(ErrorCode::AirdropConfigurationError.into());
+            }
+        }
+    
+        // Iterate over users and process airdrops
+        for user in users.iter() {
+            let user_vesting = &mut ctx.remaining_accounts[user.user_vesting_index]; // Load user vesting account
+            let airdrop_percentage = presale_account
                 .airdrop_percentages
                 .get(user.airdrop_index as usize)
                 .ok_or(ErrorCode::AirdropConfigurationError)?;
-
+    
             // Calculate the airdrop amount
             let airdrop_amount = user_vesting
                 .total_amount
-                .checked_mul(airdrop_percentage)
+                .checked_mul(*airdrop_percentage as u64)
                 .ok_or(ErrorCode::MathOverflow)?
                 .checked_div(100)
                 .ok_or(ErrorCode::MathOverflow)?;
-
+    
             // Transfer the airdrop tokens
             token::transfer(
                 ctx.accounts.into_transfer_context(&user_vesting),
                 airdrop_amount,
             )?;
-
+    
             // Update the user vesting account
-            user_vesting.claimed_amount += airdrop_amount;
-            user_vesting.airdrops_completed += 1;
+            user_vesting.claimed_amount = user_vesting
+                .claimed_amount
+                .checked_add(airdrop_amount)
+                .ok_or(ErrorCode::MathOverflow)?;
+            user_vesting.airdrops_completed = user_vesting
+                .airdrops_completed
+                .checked_add(1)
+                .ok_or(ErrorCode::MathOverflow)?;
         }
-
+    
         Ok(())
-    }
+    }    
 
     pub fn refund(ctx: Context<Refund>, refund_amount: u64) -> ProgramResult {
         let presale_account = &mut ctx.accounts.presale_account;
