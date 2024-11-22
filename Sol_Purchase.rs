@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use arrayref::array_ref;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
+declare_id!("YOUR_CONTRACT");
 
 #[program]
 pub mod fam_presale_contract {
@@ -338,7 +338,6 @@ pub mod fam_presale_contract {
     pub fn update_presale_discount(
         ctx: Context<UpdatePresaleParams>,
         new_price: Option<u64>,
-        new_discount_percentage: Option<u64>,
     ) -> ProgramResult {
         let presale_account = &mut ctx.accounts.presale_account;
     
@@ -348,32 +347,10 @@ pub mod fam_presale_contract {
                 return Err(ErrorCode::InvalidPrice.into());
             }
             presale_account.price = price;
-    
-            // Recalculate the discount percentage (based on the original price, if any)
-            if presale_account.discount_percentage > 0 {
-                let original_price = presale_account.price.checked_mul(100).ok_or(ErrorCode::MathOverflow)?
-                    .checked_div(100 - presale_account.discount_percentage).ok_or(ErrorCode::MathOverflow)?;
-                presale_account.discount_percentage = (100 - price.checked_mul(100).ok_or(ErrorCode::MathOverflow)?
-                    .checked_div(original_price).ok_or(ErrorCode::MathOverflow)?) as u64;
-            }
-        }
-    
-        // Validate and update discount percentage
-        if let Some(discount) = new_discount_percentage {
-            if discount > 100 {
-                return Err(ErrorCode::InvalidDiscountPercentage.into());
-            }
-            presale_account.discount_percentage = discount;
-    
-            // Recalculate the price based on the discount
-            presale_account.price = presale_account.price.checked_mul(100 - discount)
-                .ok_or(ErrorCode::MathOverflow)?
-                .checked_div(100)
-                .ok_or(ErrorCode::MathOverflow)?;
         }
     
         Ok(())
-    }    
+    }            
 
     pub fn distribute_initial_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
         let user_vesting = &mut ctx.accounts.user_vesting;
