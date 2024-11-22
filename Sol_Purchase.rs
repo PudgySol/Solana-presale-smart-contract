@@ -146,7 +146,12 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::HardCapReached.into());
         }
 
-        if presale_account.total_sold_sol + amount > presale_account.max_allocation {
+        if presale_account
+            .total_sold_sol
+            .checked_add(total_cost_in_sol)
+            .ok_or(ErrorCode::MathOverflow)?
+            > presale_account.hard_cap_sol
+        {
             return Err(ErrorCode::HardCapReached.into());
         }
     
@@ -308,15 +313,13 @@ pub mod fam_presale_contract {
             refund_sol,
         });
 
-        let refundable_tokens = user_vesting
+        if refund_amount > user_vesting
             .total_amount
+            .saturating_sub(claimable_tokens)
             .saturating_sub(user_vesting.claimed_amount)
-            .saturating_sub(claimable_tokens);
-
-        if refund_amount > refundable_tokens {
+        {
             return Err(ErrorCode::InsufficientRefundBalance.into());
         }
-
     
         Ok(())
     }
@@ -324,10 +327,7 @@ pub mod fam_presale_contract {
     fn get_price_from_oracle(oracle_account: &AccountInfo) -> Result<u64, ProgramError> {
         let price_feed = load_price_feed_from_account_info(oracle_account)?;
         let price_data = price_feed.get_current_price().ok_or(ErrorCode::PriceFeedUnavailable)?;
-        let token_price = match get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle) {
-            Ok(price) => price,
-            Err(_) => presale_account.manual_price_fallback, // Use fallback price
-        };
+        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle).unwrap_or(presale_account.manual_price_fallback);
         Ok(price_data.price as u64) // Price in USD (scaled)
     }
 
