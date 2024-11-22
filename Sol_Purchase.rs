@@ -1,5 +1,7 @@
 use anchor_lang::prelude::*;
 use arrayref::array_ref;
+use pyth_sol_sdk::price_update::PriceUpdateV2;
+use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
 declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
@@ -101,9 +103,20 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::SaleNotActive.into());
         }
     
+        // Fetch SOL/USD price from the oracle
+        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle)?;
+    
+        // Calculate the token price in SOL
+        let token_price_in_sol = presale_account
+            .price
+            .checked_mul(10u64.pow(9))  // Convert price from USD cents to lamports
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(sol_price_in_usd)
+            .ok_or(ErrorCode::MathOverflow)?;
+    
         // Calculate total cost in SOL (lamports)
         let total_cost_in_sol = amount
-            .checked_mul(presale_account.price)
+            .checked_mul(token_price_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
     
         // Ensure the buyer has enough SOL
@@ -160,7 +173,7 @@ pub mod fam_presale_contract {
         });
     
         Ok(())
-    }        
+    }           
 
     // Utility function to derive the program's PDA
     fn derive_presale_pda(program_id: &Pubkey, seed: &[u8]) -> Pubkey {
@@ -234,14 +247,17 @@ pub mod fam_presale_contract {
         if refund_amount > user_vesting.total_amount.saturating_sub(claimable_tokens) {
             return Err(ErrorCode::InsufficientRefundBalance.into());
         }
-        
-        if refund_amount > user_vesting.total_amount.saturating_sub(user_vesting.claimed_amount) {
-            return Err(ErrorCode::InsufficientRefundBalance.into());
-        }
     
-        // Calculate the SOL to refund (refund_amount * price)
+        // Fetch SOL/USD price from the oracle
+        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle)?;
+    
+        // Calculate the refund amount in SOL
         let refund_sol = refund_amount
             .checked_mul(presale_account.price)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_mul(10u64.pow(9))  // Convert USD cents to lamports
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(sol_price_in_usd)
             .ok_or(ErrorCode::MathOverflow)?;
     
         // Ensure the program's PDA has enough SOL for the refund
@@ -273,6 +289,12 @@ pub mod fam_presale_contract {
     
         Ok(())
     }
+    
+    fn get_price_from_oracle(oracle_account: &AccountInfo) -> Result<u64, ProgramError> {
+        let price_feed = load_price_feed_from_account_info(oracle_account)?;
+        let price_data = price_feed.get_current_price().ok_or(ErrorCode::PriceFeedUnavailable)?;
+        Ok(price_data.price as u64) // Price in USD (scaled)
+    }
 
     #[event]
     pub struct RefundEvent {
@@ -289,6 +311,7 @@ pub mod fam_presale_contract {
         pub user_vesting: Account<'info, UserVesting>,       // User's vesting account
         #[account(mut)]
         pub buyer: Signer<'info>,                           // User requesting the refund
+        pub sol_to_usd_oracle: AccountInfo<'info>,          // Oracle account for SOL/USD price
         pub system_program: Program<'info, System>,         // System program for SOL transfers
     }
 
@@ -503,6 +526,7 @@ pub mod fam_presale_contract {
         pub user_vesting: Account<'info, UserVesting>,
         #[account(mut)]
         pub buyer: Signer<'info>,
+        pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle account for SOL/USD price
         pub system_program: Program<'info, System>,
     }
 
