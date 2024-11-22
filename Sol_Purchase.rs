@@ -4,7 +4,7 @@ use pyth_sol_sdk::price_update::PriceUpdateV2;
 use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
+declare_id!("contract");
 
 #[program]
 pub mod fam_presale_contract {
@@ -103,7 +103,7 @@ pub mod fam_presale_contract {
         // Fetch current timestamp
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
-
+    
         // Ensure presale is not paused
         if presale_account.paused {
             return Err(ErrorCode::PresalePaused.into());
@@ -114,11 +114,11 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::SaleNotActive.into());
         }
     
-        // Fetch SOL/USD price using fallback
+        // Fetch SOL/USD price using fallback logic
         let sol_price_in_usd = get_price_from_oracle(
             &ctx.accounts.sol_to_usd_oracle,
             presale_account.manual_price_override,
-        )?;        
+        )?;
     
         // Calculate the token price in SOL
         let token_price_in_sol = presale_account
@@ -161,14 +161,12 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::HardCapReached.into());
         }
     
-        // --- STATE UPDATES (Reentrancy Protection) ---
-        // Update presale account metrics
+        // --- STATE UPDATES ---
         presale_account.total_sold_sol = presale_account
             .total_sold_sol
             .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
     
-        // Update user vesting metrics
         user_vesting.total_amount = user_vesting
             .total_amount
             .checked_add(amount)
@@ -178,14 +176,12 @@ pub mod fam_presale_contract {
             .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
     
-        // --- EXTERNAL CALL (After State Updates) ---
-        // Transfer SOL to the program's PDA
+        // --- EXTERNAL CALL ---
         let program_pda = ctx.accounts.presale_account.to_account_info().key;
         **ctx.accounts.buyer.to_account_info().try_borrow_mut_lamports()? -= total_cost_in_sol;
         **program_pda.try_borrow_mut_lamports()? += total_cost_in_sol;
     
-        // --- EVENT EMISSION ---
-        // Emit the purchase event
+        // Emit event
         emit!(PurchaseEvent {
             buyer: ctx.accounts.buyer.key(),
             amount,
@@ -194,11 +190,16 @@ pub mod fam_presale_contract {
         });
     
         Ok(())
-    }               
+    }                  
 
     // Utility function to derive the program's PDA
     fn derive_presale_pda(program_id: &Pubkey, seed: &[u8]) -> Pubkey {
         Pubkey::find_program_address(&[seed], program_id).0
+    }
+    #[event]
+    pub struct PauseStateChanged {
+        pub paused: bool, // Whether the presale is paused
+        pub timestamp: i64,
     }
 
     pub fn set_pause_state(ctx: Context<SetPauseState>, paused: bool) -> ProgramResult {
@@ -212,8 +213,15 @@ pub mod fam_presale_contract {
         // Update pause state
         presale_account.paused = paused;
     
+        // Emit pause state change event
+        let clock = Clock::get()?;
+        emit!(PauseStateChanged {
+            paused,
+            timestamp: clock.unix_timestamp,
+        });
+    
         Ok(())
-    }    
+    }  
 
     // Batch airdrop distribution to save compute units
     const MAX_BATCH_SIZE: usize = 50; // Set a limit for batch size
@@ -290,7 +298,7 @@ pub mod fam_presale_contract {
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
     
-        // Ensure the refund period is active (e.g., only after the presale ends)
+        // Ensure the refund period is active
         if current_time < presale_account.presale_end {
             return Err(ErrorCode::RefundNotAvailable.into());
         }
@@ -314,30 +322,26 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::InsufficientRefundBalance.into());
         }
     
-        // Fetch SOL/USD price using fallback
-        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle)
-            .unwrap_or(presale_account.manual_price_fallback);
+        // Fetch SOL/USD price using fallback logic
+        let sol_price_in_usd = get_price_from_oracle(
+            &ctx.accounts.sol_to_usd_oracle,
+            presale_account.manual_price_override,
+        )?;
     
-        // Calculate the refund amount in SOL
-        let refund_sol = refund_amount
-            .checked_mul(presale_account.price)
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_mul(10u64.pow(9)) // Convert USD cents to lamports
-            .ok_or(ErrorCode::MathOverflow)?
-            .checked_div(sol_price_in_usd)
-            .ok_or(ErrorCode::MathOverflow)?;
+        // Calculate refund amount in SOL
+        let refund_sol = calculate_sol_price(refund_amount, presale_account.price, sol_price_in_usd)?;
     
-        // Ensure the program's PDA has enough SOL for the refund
+        // Ensure the program PDA has enough SOL for the refund
         let program_pda = ctx.accounts.presale_account.to_account_info();
         if **program_pda.lamports.borrow() < refund_sol {
             return Err(ErrorCode::InsufficientProgramBalance.into());
         }
     
-        // Process the SOL refund
+        // Process the refund
         **program_pda.try_borrow_mut_lamports()? -= refund_sol;
         **ctx.accounts.buyer.to_account_info().try_borrow_mut_lamports()? += refund_sol;
     
-        // Update user vesting and presale metrics
+        // Update metrics
         user_vesting.total_amount = user_vesting
             .total_amount
             .checked_sub(refund_amount)
@@ -347,7 +351,7 @@ pub mod fam_presale_contract {
             .checked_sub(refund_amount)
             .ok_or(ErrorCode::MathOverflow)?;
     
-        // Emit a refund event
+        // Emit event
         emit!(RefundEvent {
             buyer: ctx.accounts.buyer.key(),
             refund_amount,
@@ -355,23 +359,47 @@ pub mod fam_presale_contract {
         });
     
         Ok(())
-    }    
+    }        
     
     fn get_price_from_oracle(
         oracle_account: &AccountInfo,
         manual_price_override: Option<u64>,
     ) -> Result<u64, ProgramError> {
-        match load_price_feed_from_account_info(oracle_account) {
-            Ok(price_feed) => {
-                let price_data = price_feed.get_current_price().ok_or(ErrorCode::PriceFeedUnavailable)?;
-                Ok(price_data.price as u64)
-            }
-            Err(_) => {
-                // Use manual override price if the oracle fails
-                manual_price_override.ok_or(ErrorCode::PriceFeedUnavailable)
+        // Attempt to load the price feed from the oracle
+        if let Ok(price_feed) = load_price_feed_from_account_info(oracle_account) {
+            if let Some(price_data) = price_feed.get_current_price() {
+                if price_data.price > 0 {
+                    return Ok(price_data.price as u64); // Return valid oracle price
+                }
             }
         }
-    } 
+        // Fallback to manual price override if oracle fails or returns invalid data
+        manual_price_override.ok_or(ErrorCode::PriceFeedUnavailable)
+    }
+    
+    pub fn update_manual_price_override(
+        ctx: Context<UpdateManualPriceOverride>,
+        new_price: Option<u64>,
+    ) -> ProgramResult {
+        let presale_account = &mut ctx.accounts.presale_account;
+    
+        // Ensure caller is the authorized admin
+        if ctx.accounts.authority.key() != presale_account.authority {
+            return Err(ErrorCode::UnauthorizedAccess.into());
+        }
+    
+        // Validate the manual price override
+        if let Some(price) = new_price {
+            if price == 0 {
+                return Err(ErrorCode::InvalidPrice.into());
+            }
+        }
+    
+        // Update the manual price override
+        presale_account.manual_price_override = new_price;
+    
+        Ok(())
+    }    
     
     fn calculate_sol_price(
         amount: u64,
@@ -589,6 +617,13 @@ pub mod fam_presale_contract {
         user_vesting.airdrops_completed = 1;
 
         Ok(())
+    }
+
+    #[derive(Accounts)]
+    pub struct UpdateManualPriceOverride<'info> {
+        #[account(mut, has_one = authority)]
+        pub presale_account: Account<'info, PresaleAccount>,
+        pub authority: Signer<'info>, // Admin account
     }
 
     #[derive(Accounts)]
