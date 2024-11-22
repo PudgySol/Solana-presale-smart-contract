@@ -2,7 +2,7 @@ use anchor_lang::prelude::*;
 use arrayref::array_ref;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("YOUR_CONTRACT");
+declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
 
 #[program]
 pub mod fam_presale_contract {
@@ -208,6 +208,88 @@ pub mod fam_presale_contract {
         }
 
         Ok(())
+    }
+
+    pub fn refund(ctx: Context<Refund>, refund_amount: u64) -> ProgramResult {
+        let presale_account = &mut ctx.accounts.presale_account;
+        let user_vesting = &mut ctx.accounts.user_vesting;
+        let clock = Clock::get()?;
+        let current_time = clock.unix_timestamp;
+    
+        // Ensure the refund period is active (e.g., only after the presale ends)
+        if current_time < presale_account.presale_end {
+            return Err(ErrorCode::RefundNotAvailable.into());
+        }
+    
+        // Ensure the user has enough unclaimed tokens to refund
+        let claimable_tokens = calculate_vested_amount(
+            user_vesting.total_amount,
+            user_vesting.start_time,
+            presale_account.vesting_period,
+            presale_account.vesting_interval,
+            current_time,
+        )
+        .saturating_sub(user_vesting.claimed_amount);
+    
+        if refund_amount > user_vesting.total_amount.saturating_sub(claimable_tokens) {
+            return Err(ErrorCode::InsufficientRefundBalance.into());
+        }
+        
+        if refund_amount > user_vesting.total_amount.saturating_sub(user_vesting.claimed_amount) {
+            return Err(ErrorCode::InsufficientRefundBalance.into());
+        }
+    
+        // Calculate the SOL to refund (refund_amount * price)
+        let refund_sol = refund_amount
+            .checked_mul(presale_account.price)
+            .ok_or(ErrorCode::MathOverflow)?;
+    
+        // Ensure the program's PDA has enough SOL for the refund
+        let program_pda = ctx.accounts.presale_account.to_account_info();
+        if **program_pda.lamports.borrow() < refund_sol {
+            return Err(ErrorCode::InsufficientProgramBalance.into());
+        }
+    
+        // Process the SOL refund
+        **program_pda.try_borrow_mut_lamports()? -= refund_sol;
+        **ctx.accounts.buyer.to_account_info().try_borrow_mut_lamports()? += refund_sol;
+    
+        // Update user vesting and presale metrics
+        user_vesting.total_amount = user_vesting
+            .total_amount
+            .checked_sub(refund_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        presale_account.total_sold_sol = presale_account
+            .total_sold_sol
+            .checked_sub(refund_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+    
+        // Emit a refund event
+        emit!(RefundEvent {
+            buyer: ctx.accounts.buyer.key(),
+            refund_amount,
+            refund_sol,
+        });
+    
+        Ok(())
+    }
+
+    #[event]
+    pub struct RefundEvent {
+        pub buyer: Pubkey,       // User's wallet public key
+        pub refund_amount: u64,  // Number of tokens refunded
+        pub refund_sol: u64,     // Amount of SOL refunded
+    }
+    
+    #[derive(Accounts)]
+    pub struct Refund<'info> {
+        #[account(mut)]
+        pub presale_account: Account<'info, PresaleAccount>, // Presale account storing presale details
+        #[account(mut)]
+        pub user_vesting: Account<'info, UserVesting>,       // User's vesting account
+        #[account(mut)]
+        pub buyer: Signer<'info>,                           // User requesting the refund
+        pub system_program: Program<'info, System>,         // System program for SOL transfers
     }
 
     #[derive(AnchorDeserialize, AnchorSerialize, Clone)]
@@ -476,6 +558,12 @@ pub mod fam_presale_contract {
         NoTokensToClaim,
         #[msg("The presale has not ended.")]
         PresaleNotEnded,
+        #[msg("Refunds are not available.")]
+        RefundNotAvailable,
+        #[msg("Insufficient unclaimed tokens for refund.")]
+        InsufficientRefundBalance,
+        #[msg("Program does not have enough SOL for the refund.")]
+        InsufficientProgramBalance,
         #[msg("All airdrops have been completed.")]
         AirdropCompleted,
         #[msg("Invalid vesting parameters.")]
@@ -506,5 +594,6 @@ pub mod fam_presale_contract {
         InvalidDiscountPercentage,
         #[msg("Invalid price. Price must be greater than zero.")]
         InvalidPrice,
+        #[error]
     }
 }
