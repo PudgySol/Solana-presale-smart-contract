@@ -4,7 +4,7 @@ use pyth_sol_sdk::price_update::PriceUpdateV2;
 use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("contract");
+declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
 
 #[program]
 pub mod fam_presale_contract {
@@ -28,21 +28,26 @@ pub mod fam_presale_contract {
         if airdrop_percentages.len() > max_airdrop_elements.into() {
             return Err(ErrorCode::AirdropConfigurationError.into());
         }
+
+        let total_percentage: u64 = airdrop_percentages.iter().sum();
+        if total_percentage > 100 {
+            return Err(ErrorCode::AirdropConfigurationError.into());
+        }
     
         if vesting_period == 0 || vesting_interval == 0 {
             return Err(ErrorCode::InvalidVestingParameters.into());
         }
     
         let presale_account = &mut ctx.accounts.presale_account;
-        presale_account.presale_start = presale_start;
-        presale_account.presale_end = presale_end;
-        presale_account.public_sale_start = public_sale_start;
-        presale_account.price = price;
-        presale_account.max_allocation = max_allocation;
-        presale_account.cliff_period = cliff_period;
-        presale_account.vesting_period = vesting_period;
-        presale_account.vesting_interval = vesting_interval;
-        presale_account.airdrop_percentages = airdrop_percentages;
+            presale_account.presale_start = presale_start;
+            presale_account.presale_end = presale_end;
+            presale_account.public_sale_start = public_sale_start;
+            presale_account.price = price;
+            presale_account.max_allocation = max_allocation;
+            presale_account.cliff_period = cliff_period;
+            presale_account.vesting_period = vesting_period;
+            presale_account.vesting_interval = vesting_interval;
+            presale_account.airdrop_percentages = airdrop_percentages;
 
         Ok(())
     }
@@ -74,6 +79,16 @@ pub mod fam_presale_contract {
         if let Some(hard_cap) = new_hard_cap {
             presale_account.hard_cap_sol = hard_cap;
         }
+    
+        // Emit event with updated parameters
+        let clock = Clock::get()?;
+        emit!(PresaleParamsUpdated {
+            new_price,
+            new_min_buy_amount,
+            new_max_buy_amount,
+            new_hard_cap,
+            timestamp: clock.unix_timestamp,
+        });
     
         Ok(())
     }    
@@ -231,39 +246,44 @@ pub mod fam_presale_contract {
         users: Vec<UserDistribution>,
     ) -> ProgramResult {
         const MAX_BATCH_SIZE: usize = 50; // Set a limit for batch size
-
+    
         let presale_account = &ctx.accounts.presale_account;
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
-
+    
         // Ensure presale has ended
         if current_time < presale_account.presale_end {
             return Err(ErrorCode::PresaleNotEnded.into());
         }
-
+    
         // Ensure batch size does not exceed MAX_BATCH_SIZE
         if users.len() > MAX_BATCH_SIZE {
             return Err(ErrorCode::BatchTooLarge.into());
         }
-
+    
         // Iterate over users and process airdrops
         for user in users.iter() {
             // Validate that the user_vesting_index is within bounds
             if user.user_vesting_index >= ctx.remaining_accounts.len() {
                 return Err(ErrorCode::InvalidUserAccountIndex.into());
             }
-
+    
             // Safely load the user vesting account
             let user_vesting_account = &mut Account::<UserVesting>::try_from(
                 &ctx.remaining_accounts[user.user_vesting_index],
             )?;
-
+    
+            // Skip users who have completed all their airdrops
+            if user_vesting_account.airdrops_completed >= presale_account.total_airdrop_periods {
+                continue;
+            }
+    
             // Ensure airdrop index is valid
             let airdrop_percentage = presale_account
                 .airdrop_percentages
                 .get(user.airdrop_index as usize)
                 .ok_or(ErrorCode::AirdropConfigurationError)?;
-
+    
             // Calculate the airdrop amount
             let airdrop_amount = user_vesting_account
                 .total_amount
@@ -271,13 +291,13 @@ pub mod fam_presale_contract {
                 .ok_or(ErrorCode::MathOverflow)?
                 .checked_div(100)
                 .ok_or(ErrorCode::MathOverflow)?;
-
+    
             // Transfer the airdrop tokens
             token::transfer(
                 ctx.accounts.into_transfer_context(user_vesting_account),
                 airdrop_amount,
             )?;
-
+    
             // Update user vesting account
             user_vesting_account.claimed_amount = user_vesting_account
                 .claimed_amount
@@ -288,9 +308,9 @@ pub mod fam_presale_contract {
                 .checked_add(1)
                 .ok_or(ErrorCode::MathOverflow)?;
         }
-
+    
         Ok(())
-    }   
+    }       
 
     pub fn refund(ctx: Context<Refund>, refund_amount: u64) -> ProgramResult {
         let presale_account = &mut ctx.accounts.presale_account;
@@ -398,8 +418,15 @@ pub mod fam_presale_contract {
         // Update the manual price override
         presale_account.manual_price_override = new_price;
     
+        // Emit event
+        let clock = Clock::get()?;
+        emit!(ManualPriceOverrideUpdated {
+            new_price,
+            timestamp: clock.unix_timestamp,
+        });
+    
         Ok(())
-    }    
+    }       
     
     fn calculate_sol_price(
         amount: u64,
@@ -452,6 +479,12 @@ pub mod fam_presale_contract {
         pub user: Pubkey,         // User's public key
         pub amount: u64,          // Amount of tokens claimed
         pub total_claimed: u64,   // Total claimed tokens after this transaction
+    }
+
+    #[event]
+    pub struct ManualPriceOverrideUpdated {
+        pub new_price: Option<u64>, // Updated manual price
+        pub timestamp: i64,        // Time of the update
     }
 
     pub fn claim(ctx: Context<Claim>) -> ProgramResult {
@@ -643,6 +676,15 @@ pub mod fam_presale_contract {
         #[account(mut)]
         pub buyer: Signer<'info>,
         pub token_program: Program<'info, Token>,
+    }
+
+    #[event]
+    pub struct PresaleParamsUpdated {
+        pub new_price: Option<u64>,
+        pub new_min_buy_amount: Option<u64>,
+        pub new_max_buy_amount: Option<u64>,
+        pub new_hard_cap: Option<u64>,
+        pub timestamp: i64,
     }
 
     #[derive(Accounts)]
