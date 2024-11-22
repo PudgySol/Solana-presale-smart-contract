@@ -88,6 +88,7 @@ pub mod fam_presale_contract {
         pub buyer: Pubkey,             // Buyer's wallet public key
         pub amount: u64,               // Number of tokens purchased
         pub cost_in_sol: Option<u64>,  // Cost in SOL equivalent (in lamports, if applicable)
+        pub timestamp: i64,
     }
 
     pub fn purchase(ctx: Context<Purchase>, amount: u64) -> ProgramResult {
@@ -103,13 +104,14 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::SaleNotActive.into());
         }
     
-        // Fetch SOL/USD price from the oracle
-        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle)?;
+        // Fetch SOL/USD price using fallback
+        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle)
+            .unwrap_or(presale_account.manual_price_fallback);
     
         // Calculate the token price in SOL
         let token_price_in_sol = presale_account
             .price
-            .checked_mul(10u64.pow(9))  // Convert price from USD cents to lamports
+            .checked_mul(10u64.pow(9)) // Convert price from USD cents to lamports
             .ok_or(ErrorCode::MathOverflow)?
             .checked_div(sol_price_in_usd)
             .ok_or(ErrorCode::MathOverflow)?;
@@ -137,15 +139,7 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::ExceedsMaximumPurchase.into());
         }
     
-        if presale_account
-            .total_sold_sol
-            .checked_add(total_cost_in_sol)
-            .ok_or(ErrorCode::MathOverflow)?
-            > presale_account.hard_cap_sol
-        {
-            return Err(ErrorCode::HardCapReached.into());
-        }
-
+        // Check if the total sold exceeds the global hard cap
         if presale_account
             .total_sold_sol
             .checked_add(total_cost_in_sol)
@@ -155,16 +149,14 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::HardCapReached.into());
         }
     
-        // Transfer SOL to the program's PDA
-        let program_pda = ctx.accounts.presale_account.to_account_info().key;
-        **ctx.accounts.buyer.to_account_info().try_borrow_mut_lamports()? -= total_cost_in_sol;
-        **program_pda.try_borrow_mut_lamports()? += total_cost_in_sol;
-    
-        // Update total sales and user metrics
+        // --- STATE UPDATES (Reentrancy Protection) ---
+        // Update presale account metrics
         presale_account.total_sold_sol = presale_account
             .total_sold_sol
-            .checked_add(amount)
+            .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
+    
+        // Update user vesting metrics
         user_vesting.total_amount = user_vesting
             .total_amount
             .checked_add(amount)
@@ -174,15 +166,23 @@ pub mod fam_presale_contract {
             .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
     
+        // --- EXTERNAL CALL (After State Updates) ---
+        // Transfer SOL to the program's PDA
+        let program_pda = ctx.accounts.presale_account.to_account_info().key;
+        **ctx.accounts.buyer.to_account_info().try_borrow_mut_lamports()? -= total_cost_in_sol;
+        **program_pda.try_borrow_mut_lamports()? += total_cost_in_sol;
+    
+        // --- EVENT EMISSION ---
         // Emit the purchase event
         emit!(PurchaseEvent {
             buyer: ctx.accounts.buyer.key(),
             amount,
             cost_in_sol: total_cost_in_sol,
+            timestamp: current_time,
         });
     
         Ok(())
-    }           
+    }               
 
     // Utility function to derive the program's PDA
     fn derive_presale_pda(program_id: &Pubkey, seed: &[u8]) -> Pubkey {
@@ -257,7 +257,7 @@ pub mod fam_presale_contract {
             return Err(ErrorCode::RefundNotAvailable.into());
         }
     
-        // Ensure the user has enough unclaimed tokens to refund
+        // Calculate claimable and refundable tokens
         let claimable_tokens = calculate_vested_amount(
             user_vesting.total_amount,
             user_vesting.start_time,
@@ -267,21 +267,24 @@ pub mod fam_presale_contract {
         )
         .saturating_sub(user_vesting.claimed_amount);
     
-        if refund_amount > user_vesting.total_amount.saturating_sub(claimable_tokens) {
+        let refundable_tokens = user_vesting
+            .total_amount
+            .saturating_sub(claimable_tokens)
+            .saturating_sub(user_vesting.claimed_amount);
+    
+        if refund_amount > refundable_tokens {
             return Err(ErrorCode::InsufficientRefundBalance.into());
         }
     
-        // Fetch SOL/USD price from the oracle
-        let sol_price_in_usd = match get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle) {
-            Ok(price) => price,
-            Err(_) => presale_account.manual_price_fallback,
-        };
+        // Fetch SOL/USD price using fallback
+        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle)
+            .unwrap_or(presale_account.manual_price_fallback);
     
         // Calculate the refund amount in SOL
         let refund_sol = refund_amount
             .checked_mul(presale_account.price)
             .ok_or(ErrorCode::MathOverflow)?
-            .checked_mul(10u64.pow(9))  // Convert USD cents to lamports
+            .checked_mul(10u64.pow(9)) // Convert USD cents to lamports
             .ok_or(ErrorCode::MathOverflow)?
             .checked_div(sol_price_in_usd)
             .ok_or(ErrorCode::MathOverflow)?;
@@ -312,17 +315,9 @@ pub mod fam_presale_contract {
             refund_amount,
             refund_sol,
         });
-
-        if refund_amount > user_vesting
-            .total_amount
-            .saturating_sub(claimable_tokens)
-            .saturating_sub(user_vesting.claimed_amount)
-        {
-            return Err(ErrorCode::InsufficientRefundBalance.into());
-        }
     
         Ok(())
-    }
+    }    
     
     fn get_price_from_oracle(oracle_account: &AccountInfo) -> Result<u64, ProgramError> {
         let price_feed = load_price_feed_from_account_info(oracle_account)?;
