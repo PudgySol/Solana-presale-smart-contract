@@ -4,7 +4,7 @@ use pyth_sol_sdk::price_update::PriceUpdateV2;
 use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
+declare_id!("Contract");
 
 #[program]
 pub mod fam_presale_contract {
@@ -190,61 +190,68 @@ pub mod fam_presale_contract {
     }
 
     // Batch airdrop distribution to save compute units
-    pub fn distribute_airdrops_batch(
-        ctx: Context<BatchDistributeAirdrops>,
-        users: Vec<UserDistribution>,
-    ) -> ProgramResult {
-        let presale_account = &ctx.accounts.presale_account;
-        let clock = Clock::get()?;
-        let current_time = clock.unix_timestamp;
-    
-        // Ensure presale has ended
-        if current_time < presale_account.presale_end {
-            return Err(ErrorCode::PresaleNotEnded.into());
+const MAX_BATCH_SIZE: usize = 50; // Set a limit for batch size
+
+pub fn distribute_airdrops_batch(
+    ctx: Context<BatchDistributeAirdrops>,
+    users: Vec<UserDistribution>,
+) -> ProgramResult {
+    let presale_account = &ctx.accounts.presale_account;
+    let clock = Clock::get()?;
+    let current_time = clock.unix_timestamp;
+
+    // Ensure presale has ended
+    if current_time < presale_account.presale_end {
+        return Err(ErrorCode::PresaleNotEnded.into());
+    }
+
+    // Ensure batch size does not exceed MAX_BATCH_SIZE
+    if users.len() > MAX_BATCH_SIZE {
+        return Err(ErrorCode::BatchTooLarge.into());
+    }
+
+    // Validate users and airdrop configurations
+    for user in users.iter() {
+        if user.airdrop_index as usize >= presale_account.airdrop_percentages.len() {
+            return Err(ErrorCode::AirdropConfigurationError.into());
         }
-    
-        // Validate users and airdrop configurations
-        for user in users.iter() {
-            if user.airdrop_index as usize >= presale_account.airdrop_percentages.len() {
-                return Err(ErrorCode::AirdropConfigurationError.into());
-            }
-        }
-    
-        // Iterate over users and process airdrops
-        for user in users.iter() {
-            let user_vesting = &mut ctx.remaining_accounts[user.user_vesting_index]; // Load user vesting account
-            let airdrop_percentage = presale_account
-                .airdrop_percentages
-                .get(user.airdrop_index as usize)
-                .ok_or(ErrorCode::AirdropConfigurationError)?;
-    
-            // Calculate the airdrop amount
-            let airdrop_amount = user_vesting
-                .total_amount
-                .checked_mul(*airdrop_percentage as u64)
-                .ok_or(ErrorCode::MathOverflow)?
-                .checked_div(100)
-                .ok_or(ErrorCode::MathOverflow)?;
-    
-            // Transfer the airdrop tokens
-            token::transfer(
-                ctx.accounts.into_transfer_context(&user_vesting),
-                airdrop_amount,
-            )?;
-    
-            // Update the user vesting account
-            user_vesting.claimed_amount = user_vesting
-                .claimed_amount
-                .checked_add(airdrop_amount)
-                .ok_or(ErrorCode::MathOverflow)?;
-            user_vesting.airdrops_completed = user_vesting
-                .airdrops_completed
-                .checked_add(1)
-                .ok_or(ErrorCode::MathOverflow)?;
-        }
-    
-        Ok(())
-    }    
+    }
+
+    // Iterate over users and process airdrops
+    for user in users.iter() {
+        let user_vesting = &mut ctx.remaining_accounts[user.user_vesting_index]; // Load user vesting account
+        let airdrop_percentage = presale_account
+            .airdrop_percentages
+            .get(user.airdrop_index as usize)
+            .ok_or(ErrorCode::AirdropConfigurationError)?;
+
+        // Calculate the airdrop amount
+        let airdrop_amount = user_vesting
+            .total_amount
+            .checked_mul(*airdrop_percentage as u64)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(100)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        // Transfer the airdrop tokens
+        token::transfer(
+            ctx.accounts.into_transfer_context(&user_vesting),
+            airdrop_amount,
+        )?;
+
+        // Update the user vesting account
+        user_vesting.claimed_amount = user_vesting
+            .claimed_amount
+            .checked_add(airdrop_amount)
+            .ok_or(ErrorCode::MathOverflow)?;
+        user_vesting.airdrops_completed = user_vesting
+            .airdrops_completed
+            .checked_add(1)
+            .ok_or(ErrorCode::MathOverflow)?;
+    }
+
+    Ok(())
+}    
 
     pub fn refund(ctx: Context<Refund>, refund_amount: u64) -> ProgramResult {
         let presale_account = &mut ctx.accounts.presale_account;
@@ -322,7 +329,6 @@ pub mod fam_presale_contract {
     fn get_price_from_oracle(oracle_account: &AccountInfo) -> Result<u64, ProgramError> {
         let price_feed = load_price_feed_from_account_info(oracle_account)?;
         let price_data = price_feed.get_current_price().ok_or(ErrorCode::PriceFeedUnavailable)?;
-        let sol_price_in_usd = get_price_from_oracle(&ctx.accounts.sol_to_usd_oracle).unwrap_or(presale_account.manual_price_fallback);
         Ok(price_data.price as u64) // Price in USD (scaled)
     }
 
@@ -648,6 +654,8 @@ pub mod fam_presale_contract {
         InvalidDiscountPercentage,
         #[msg("Invalid price. Price must be greater than zero.")]
         InvalidPrice,
+        #[msg("Batch size exceeds the maximum limit.")]
+        BatchTooLarge,
         #[error]
     }
 }
