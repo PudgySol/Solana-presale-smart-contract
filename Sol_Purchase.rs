@@ -1,10 +1,10 @@
-use anchor_lang::prelude::*;
+use pyth_sdk::PriceFeed;
+use pyth_sdk_solana::load_price_feed_from_account_info;
 use arrayref::array_ref;
-use pyth_sol_sdk::price_update::PriceUpdateV2;
-use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
+use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("Contract");
+declare_id!("BU9M4GMAjMCLiwd7opAqmZz12VtqHE3YRjbkx5MkTWq2");
 
 #[program]
 pub mod fam_presale_contract {
@@ -809,7 +809,7 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    #[error]
+    #[error_code]
     pub enum ErrorCode {
         #[msg("The sale is not currently active.")]
         SaleNotActive,
@@ -859,6 +859,6 @@ pub mod fam_presale_contract {
         InvalidUserAccountIndex,
         #[msg("Presale is currently paused.")]
         PresalePaused,
-        #[error]
     }
+
 }
