@@ -4,7 +4,7 @@ use pyth_sol_sdk::price_update::PriceUpdateV2;
 use pyth_sdk_solana::{load_price_feed_from_account_info, PriceFeed};
 use anchor_spl::token::{self, Mint, Token, TokenAccount, Transfer};
 
-declare_id!("Contract");
+declare_id!("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya");
 
 #[program]
 pub mod fam_presale_contract {
@@ -28,18 +28,30 @@ pub mod fam_presale_contract {
         if airdrop_percentages.len() > max_airdrop_elements.into() {
             return Err(ErrorCode::AirdropConfigurationError.into());
         }
-
         let total_percentage: u64 = airdrop_percentages.iter().sum();
         if total_percentage > 100 {
             return Err(ErrorCode::AirdropConfigurationError.into());
         }
-    
         if vesting_period == 0 || vesting_interval == 0 {
             return Err(ErrorCode::InvalidVestingParameters.into());
         }
-
         if vesting_interval > vesting_period {
             return Err(ErrorCode::InvalidVestingParameters.into());
+        }
+        if cliff_period > vesting_period {
+            return Err(ErrorCode::InvalidVestingParameters.into());
+        }
+        if presale_start >= presale_end {
+            return Err(ErrorCode::InvalidPresaleTiming.into());
+        }
+        if public_sale_start <= presale_end {
+            return Err(ErrorCode::InvalidPresaleTiming.into());
+        }
+        if airdrop_percentages.is_empty() {
+            return Err(ErrorCode::AirdropConfigurationError.into());
+        }
+        if airdrop_percentages.iter().any(|&x| x == 0) {
+            return Err(ErrorCode::AirdropConfigurationError.into());
         }
     
         let presale_account = &mut ctx.accounts.presale_account;
@@ -194,6 +206,23 @@ pub mod fam_presale_contract {
             .total_purchased_sol
             .checked_add(total_cost_in_sol)
             .ok_or(ErrorCode::MathOverflow)?;
+
+        // Ensure the amount is non-zero
+        if amount == 0 || total_cost_in_sol < presale_account.min_buy_amount_sol {
+            return Err(ErrorCode::BelowMinimumPurchase.into());
+        }
+
+        // Derive a minimum token purchase based on `min_buy_amount_sol` and token price
+        let min_token_purchase = presale_account
+            .min_buy_amount_sol
+            .checked_mul(sol_price_in_usd)
+            .ok_or(ErrorCode::MathOverflow)?
+            .checked_div(presale_account.price)
+            .ok_or(ErrorCode::MathOverflow)?;
+
+        if amount < min_token_purchase {
+            return Err(ErrorCode::BelowMinimumPurchase.into());
+        }
     
         // --- EXTERNAL CALL ---
         let program_pda = ctx.accounts.presale_account.to_account_info().key;
@@ -295,13 +324,14 @@ pub mod fam_presale_contract {
                 .ok_or(ErrorCode::MathOverflow)?
                 .checked_div(100)
                 .ok_or(ErrorCode::MathOverflow)?;
-    
             // Transfer the airdrop tokens
             token::transfer(
                 ctx.accounts.into_transfer_context(user_vesting_account),
                 airdrop_amount,
             )?;
-    
+            if airdrop_amount == 0 {
+                continue; // Avoid unnecessary transfers or updates
+            }
             // Update user vesting account
             user_vesting_account.claimed_amount = user_vesting_account
                 .claimed_amount
@@ -342,10 +372,10 @@ pub mod fam_presale_contract {
             .saturating_sub(claimable_tokens)
             .saturating_sub(user_vesting.claimed_amount);
     
-        if refund_amount > refundable_tokens {
+        if refund_amount == 0 || refundable_tokens == 0 {
             return Err(ErrorCode::InsufficientRefundBalance.into());
         }
-    
+
         // Fetch SOL/USD price using fallback logic
         let sol_price_in_usd = get_price_from_oracle(
             &ctx.accounts.sol_to_usd_oracle,
@@ -380,7 +410,9 @@ pub mod fam_presale_contract {
             buyer: ctx.accounts.buyer.key(),
             refund_amount,
             refund_sol,
-            remaining_tokens: refundable_tokens - refund_amount, 
+            remaining_tokens: refundable_tokens - refund_amount,
+            total_refund_tokens: user_vesting.total_amount,
+            total_refunded_sol: presale_account.total_sold_sol, 
         });
     
         Ok(())
@@ -460,7 +492,9 @@ pub mod fam_presale_contract {
         pub buyer: Pubkey,       // User's wallet public key
         pub refund_amount: u64,  // Number of tokens refunded
         pub refund_sol: u64,     // Amount of SOL refunded
-        pub remaining_tokens: u64, 
+        pub remaining_tokens: u64, // Remaining refundable tokens
+        pub total_refund_tokens: u64, // Total tokens refunded so far
+        pub total_refunded_sol: u64,  // Total SOL refunded so far
     }
     
     #[derive(Accounts)]
@@ -550,8 +584,17 @@ pub mod fam_presale_contract {
             return 0;
         }
         let elapsed_time = current_time - start_time;
+
+        if vesting_period == 0 || vesting_interval == 0 {
+            return 0;
+        }
+
         let vested_intervals = elapsed_time / vesting_interval;
         let total_intervals = vesting_period / vesting_interval;
+        
+        if total_intervals == 0 {
+            return 0;
+        }
 
         // Calculate the proportion of vested tokens
         let vested_amount = (total_amount as u128 * vested_intervals as u128 / total_intervals as u128) as u64;
