@@ -8,7 +8,7 @@ use solana_program::{
     pubkey::Pubkey,
 };
 
-declare_id!("ACAzRjWNaiDHnVRUKYXz2PHSNPFNmLrpKCjAAcvJt1va");
+declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
 
 #[program]
 pub mod fam_presale_contract {
@@ -459,19 +459,6 @@ pub mod fam_presale_contract {
         Ok(vested_amount.saturating_sub(user_vesting.claimed_amount))
     }
 
-    impl<'info> Claim<'info> {
-        fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
-            CpiContext::new(
-                self.token_program.to_account_info(),
-                Transfer {
-                    from: self.user_vesting.to_account_info(),
-                    to: self.buyer.to_account_info(),
-                    authority: self.buyer.to_account_info(),
-                },
-            )
-        }
-    }
-
     pub fn update_presale_discount(
         ctx: Context<UpdatePresaleParams>,
         new_price: Option<u64>,
@@ -806,6 +793,33 @@ pub struct ManualPriceOverrideUpdated {
     pub timestamp: i64,         // Time of the update
 }
 
+impl<'info> Claim<'info> {
+    fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        CpiContext::new(
+            self.token_program.to_account_info(),
+            Transfer {
+                from: self.user_vesting.to_account_info(),
+                to: self.buyer.to_account_info(),
+                authority: self.buyer.to_account_info(),
+            },
+        )
+    }
+}
+
+impl<'info> BatchDistributeAirdrops<'info> {
+    pub fn into_transfer_context(
+        &self,
+        destination_account: Account<'info, TokenAccount>,
+    ) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.presale_account.to_account_info(),
+            to: destination_account.to_account_info(),
+            authority: self.authority.to_account_info(),
+        };
+        CpiContext::new(self.system_program.to_account_info(), cpi_accounts)
+    }
+}
+
 pub fn claim(ctx: Context<Claim>) -> Result<()> {
     let user_vesting = &mut ctx.accounts.user_vesting;
     let clock = Clock::get()?;
@@ -842,6 +856,10 @@ pub fn claim(ctx: Context<Claim>) -> Result<()> {
 
 pub fn distribute_airdrops_batch(ctx: Context<BatchDistributeAirdrops>, amount: u64) -> Result<()> {
     // Iterate through the dynamic accounts in `remaining_accounts`
+    let destination_account = ctx.accounts.user_vesting_account.clone();
+    let transfer_ctx = ctx.accounts.into_transfer_context(destination_account);
+    token::transfer(transfer_ctx, amount)?;
+    
     for account_info in ctx.remaining_accounts.iter() {
         // Validate each account as a TokenAccount
         let recipient: Account<TokenAccount> = Account::try_from(account_info)?;
