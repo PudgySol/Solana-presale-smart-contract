@@ -434,88 +434,6 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    #[event]
-    pub struct RefundEvent {
-        pub buyer: Pubkey,            // User's wallet public key
-        pub refund_amount: u64,       // Number of tokens refunded
-        pub refund_sol: u64,          // Amount of SOL refunded
-        pub remaining_tokens: u64,    // Remaining refundable tokens
-        pub total_refund_tokens: u64, // Total tokens refunded so far
-        pub total_refunded_sol: u64,  // Total SOL refunded so far
-    }
-
-    #[derive(Accounts)]
-    pub struct Refund<'info> {
-        #[account(mut)]
-        pub presale_account: Account<'info, PresaleAccount>, // Presale account storing presale details
-        #[account(mut)]
-        pub user_vesting: Account<'info, UserVesting>, // User's vesting account
-        #[account(mut)]
-        pub buyer: Signer<'info>, // User requesting the refund
-        pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle account for SOL/USD price
-        pub system_program: Program<'info, System>, // System program for SOL transfers
-    }
-
-    #[derive(Accounts)]
-    pub struct SetPauseState<'info> {
-        #[account(mut, has_one = authority)]
-        pub presale_account: Account<'info, PresaleAccount>,
-        pub authority: Signer<'info>, // Admin account
-    }
-
-    #[derive(AnchorDeserialize, AnchorSerialize, Clone)]
-    pub struct UserDistribution {
-        pub user_vesting_index: usize, // Index in the remaining accounts array
-        pub airdrop_index: u8,         // Index of the current airdrop percentage
-    }
-
-    #[event]
-    pub struct ClaimEvent {
-        pub user: Pubkey,       // User's public key
-        pub amount: u64,        // Amount of tokens claimed
-        pub total_claimed: u64, // Total claimed tokens after this transaction
-    }
-
-    #[event]
-    pub struct ManualPriceOverrideUpdated {
-        pub new_price: Option<u64>, // Updated manual price
-        pub timestamp: i64,         // Time of the update
-    }
-
-    pub fn claim(ctx: Context<Claim>) -> ProgramResult {
-        let user_vesting = &mut ctx.accounts.user_vesting;
-        let clock = Clock::get()?;
-        let current_time = clock.unix_timestamp;
-
-        // Calculate vested tokens
-        let vested_amount = calculate_vested_amount(
-            user_vesting.total_amount,
-            user_vesting.start_time,
-            ctx.accounts.presale_account.vesting_period,
-            ctx.accounts.presale_account.vesting_interval,
-            current_time,
-        );
-
-        let claimable_amount = vested_amount.saturating_sub(user_vesting.claimed_amount);
-        if claimable_amount > 0 {
-            token::transfer(ctx.accounts.into_transfer_context(), claimable_amount)?;
-
-            // Update claimed amount
-            user_vesting.claimed_amount += claimable_amount;
-
-            // Emit event
-            emit!(ClaimEvent {
-                user: ctx.accounts.buyer.key(),
-                amount: claimable_amount,
-                total_claimed: user_vesting.claimed_amount,
-            });
-
-            Ok(())
-        } else {
-            Err(ErrorCode::NoTokensToClaim.into())
-        }
-    }
-
     // Helper to calculate vested amount
     fn calculate_vested_amount(
         total_amount: u64,
@@ -624,62 +542,6 @@ pub mod fam_presale_contract {
         user_vesting.airdrops_completed = 1;
 
         Ok(())
-    }
-
-    #[derive(Accounts)]
-    pub struct UpdateManualPriceOverride<'info> {
-        #[account(mut, has_one = authority)]
-        pub presale_account: Account<'info, PresaleAccount>,
-        pub authority: Signer<'info>, // Admin account
-    }
-
-    #[derive(Accounts)]
-    pub struct UpdatePresaleParams<'info> {
-        #[account(mut, has_one = authority)]
-        pub presale_account: Account<'info, PresaleAccount>,
-        pub authority: Signer<'info>, // Admin account
-    }
-
-    // Define the `Claim` context for claiming tokens
-    #[derive(Accounts)]
-    pub struct Claim<'info> {
-        #[account(mut)]
-        pub user_vesting: Account<'info, UserVesting>,
-        #[account(mut)]
-        pub presale_account: Account<'info, PresaleAccount>, // Added
-        #[account(mut)]
-        pub buyer: Signer<'info>,
-        pub token_program: Program<'info, Token>,
-    }
-
-    #[event]
-    pub struct PresaleParamsUpdated {
-        pub new_price: Option<u64>,
-        pub new_min_buy_amount: Option<u64>,
-        pub new_max_buy_amount: Option<u64>,
-        pub new_hard_cap: Option<u64>,
-        pub timestamp: i64,
-    }
-
-    #[derive(Accounts)]
-    pub struct DistributeAirdrop<'info> {
-        #[account(mut)]
-        pub user_vesting: Account<'info, UserVesting>,
-        #[account(mut)]
-        pub presale_account: Account<'info, PresaleAccount>,
-        pub token_program: Program<'info, Token>,
-    }
-
-    #[derive(Accounts)]
-    pub struct Purchase<'info> {
-        #[account(mut)]
-        pub presale_account: Account<'info, PresaleAccount>,
-        #[account(mut)]
-        pub user_vesting: Account<'info, UserVesting>,
-        #[account(mut)]
-        pub buyer: Signer<'info>,
-        pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle account for SOL/USD price
-        pub system_program: Program<'info, System>,
     }
 
     pub fn distribute_monthly_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
@@ -900,4 +762,151 @@ pub struct PresaleAccount {
     pub authority: Pubkey,                  // Admin authority key
     pub manual_price_override: Option<u64>, // Optional manual price in USD cents
     pub paused: bool,                       // Whether the presale is paused
+}
+
+#[derive(Accounts)]
+pub struct UpdateManualPriceOverride<'info> {
+    #[account(mut, has_one = authority)]
+    pub presale_account: Account<'info, PresaleAccount>,
+    pub authority: Signer<'info>, // Admin account
+}
+
+#[derive(Accounts)]
+pub struct UpdatePresaleParams<'info> {
+    #[account(mut, has_one = authority)]
+    pub presale_account: Account<'info, PresaleAccount>,
+    pub authority: Signer<'info>, // Admin account
+}
+
+// Define the `Claim` context for claiming tokens
+#[derive(Accounts)]
+pub struct Claim<'info> {
+    #[account(mut)]
+    pub user_vesting: Account<'info, UserVesting>,
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>, // Added
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[event]
+pub struct PresaleParamsUpdated {
+    pub new_price: Option<u64>,
+    pub new_min_buy_amount: Option<u64>,
+    pub new_max_buy_amount: Option<u64>,
+    pub new_hard_cap: Option<u64>,
+    pub timestamp: i64,
+}
+
+#[derive(Accounts)]
+pub struct DistributeAirdrop<'info> {
+    #[account(mut)]
+    pub user_vesting: Account<'info, UserVesting>,
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>,
+    pub token_program: Program<'info, Token>,
+}
+
+#[derive(Accounts)]
+pub struct Purchase<'info> {
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>,
+    #[account(mut)]
+    pub user_vesting: Account<'info, UserVesting>,
+    #[account(mut)]
+    pub buyer: Signer<'info>,
+    pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle account for SOL/USD price
+    pub system_program: Program<'info, System>,
+}
+
+#[event]
+pub struct RefundEvent {
+    pub buyer: Pubkey,            // User's wallet public key
+    pub refund_amount: u64,       // Number of tokens refunded
+    pub refund_sol: u64,          // Amount of SOL refunded
+    pub remaining_tokens: u64,    // Remaining refundable tokens
+    pub total_refund_tokens: u64, // Total tokens refunded so far
+    pub total_refunded_sol: u64,  // Total SOL refunded so far
+}
+
+#[derive(Accounts)]
+pub struct Refund<'info> {
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>, // Presale account storing presale details
+    #[account(mut)]
+    pub user_vesting: Account<'info, UserVesting>, // User's vesting account
+    #[account(mut)]
+    pub buyer: Signer<'info>, // User requesting the refund
+    pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle account for SOL/USD price
+    pub system_program: Program<'info, System>, // System program for SOL transfers
+}
+
+#[derive(Accounts)]
+pub struct SetPauseState<'info> {
+    #[account(mut, has_one = authority)]
+    pub presale_account: Account<'info, PresaleAccount>,
+    pub authority: Signer<'info>, // Admin account
+}
+
+#[derive(AnchorDeserialize, AnchorSerialize, Clone)]
+pub struct UserDistribution {
+    pub user_vesting_index: usize, // Index in the remaining accounts array
+    pub airdrop_index: u8,         // Index of the current airdrop percentage
+}
+
+#[event]
+pub struct ClaimEvent {
+    pub user: Pubkey,       // User's public key
+    pub amount: u64,        // Amount of tokens claimed
+    pub total_claimed: u64, // Total claimed tokens after this transaction
+}
+
+#[event]
+pub struct ManualPriceOverrideUpdated {
+    pub new_price: Option<u64>, // Updated manual price
+    pub timestamp: i64,         // Time of the update
+}
+
+pub fn claim(ctx: Context<Claim>) -> ProgramResult {
+    let user_vesting = &mut ctx.accounts.user_vesting;
+    let clock = Clock::get()?;
+    let current_time = clock.unix_timestamp;
+
+    // Calculate vested tokens
+    let vested_amount = calculate_vested_amount(
+        user_vesting.total_amount,
+        user_vesting.start_time,
+        ctx.accounts.presale_account.vesting_period,
+        ctx.accounts.presale_account.vesting_interval,
+        current_time,
+    );
+
+    let claimable_amount = vested_amount.saturating_sub(user_vesting.claimed_amount);
+    if claimable_amount > 0 {
+        token::transfer(ctx.accounts.into_transfer_context(), claimable_amount)?;
+
+        // Update claimed amount
+        user_vesting.claimed_amount += claimable_amount;
+
+        // Emit event
+        emit!(ClaimEvent {
+            user: ctx.accounts.buyer.key(),
+            amount: claimable_amount,
+            total_claimed: user_vesting.claimed_amount,
+        });
+
+        Ok(())
+    } else {
+        Err(ErrorCode::NoTokensToClaim.into())
+    }
+}
+
+#[derive(Accounts)]
+pub struct BatchDistributeAirdrops<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(mut)]
+    pub recipients: Vec<Account<'info, TokenAccount>>, // Supports batch recipients
+    pub system_program: Program<'info, System>,
 }
