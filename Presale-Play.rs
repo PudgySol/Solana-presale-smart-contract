@@ -555,7 +555,6 @@ pub mod fam_presale_contract {
 
         Ok(())
     }
-
 }
 
 // Utility function: Place this outside the #[program] module
@@ -580,7 +579,7 @@ pub fn calculate_sol_price(
 pub fn get_price_from_oracle(
     oracle_account: &AccountInfo,
     manual_price_override: Option<u64>,
-) -> Result<u64, ProgramError> {
+) -> Result<u64> {
     // Attempt to load the price feed from the oracle
     if let Ok(price_feed) = load_price_feed_from_account_info(oracle_account) {
         if let Some(price_data) = price_feed.get_current_price() {
@@ -602,15 +601,6 @@ pub fn get_price_from_oracle(
     Err(ErrorCode::PriceFeedUnavailable.into())
 }
 
-#[derive(Accounts)]
-pub struct Initialize<'info> {
-    #[account(init, payer = user, space = 8 + 40)]
-    pub data_account: Account<'info, DataAccount>,
-    #[account(mut)]
-    pub user: Signer<'info>,
-    pub system_program: Program<'info, System>,
-}
-
 // Example account struct
 #[account]
 pub struct DataAccount {
@@ -624,29 +614,6 @@ pub struct UserVesting {
     pub start_time: i64,          // Presale end time
     pub airdrops_completed: u8,   // Number of airdrops already distributed
     pub total_purchased_sol: u64, // Total SOL equivalent purchased by this user
-}
-
-// Define the PurchaseEvent at the top of your contract
-#[event]
-pub struct PurchaseEvent {
-    pub buyer: Pubkey,            // Buyer's wallet public key
-    pub amount: u64,              // Number of tokens purchased
-    pub cost_in_sol: Option<u64>, // Cost in SOL equivalent (in lamports, if applicable)
-    pub timestamp: i64,
-}
-
-// Utility function to derive the program's PDA
-#[event]
-pub struct PauseStateChanged {
-    pub paused: bool, // Whether the presale is paused
-    pub timestamp: i64,
-}
-
-#[derive(Accounts)]
-pub struct CalculateClaimable<'info> {
-    #[account(mut)]
-    pub user_vesting: Account<'info, UserVesting>,
-    pub presale_account: Account<'info, PresaleAccount>,
 }
 
 #[account]
@@ -668,6 +635,22 @@ pub struct PresaleAccount {
     pub authority: Pubkey,                  // Admin authority key
     pub manual_price_override: Option<u64>, // Optional manual price in USD cents
     pub paused: bool,                       // Whether the presale is paused
+}
+
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    #[account(init, payer = user, space = 8 + 40)]
+    pub data_account: Account<'info, DataAccount>,
+    #[account(mut)]
+    pub user: Signer<'info>,
+    pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct CalculateClaimable<'info> {
+    #[account(mut)]
+    pub user_vesting: Account<'info, UserVesting>,
+    pub presale_account: Account<'info, PresaleAccount>,
 }
 
 #[derive(Accounts)]
@@ -696,15 +679,6 @@ pub struct Claim<'info> {
     pub token_program: Program<'info, Token>,
 }
 
-#[event]
-pub struct PresaleParamsUpdated {
-    pub new_price: Option<u64>,
-    pub new_min_buy_amount: Option<u64>,
-    pub new_max_buy_amount: Option<u64>,
-    pub new_hard_cap: Option<u64>,
-    pub timestamp: i64,
-}
-
 #[derive(Accounts)]
 pub struct DistributeAirdrop<'info> {
     #[account(mut)]
@@ -726,16 +700,6 @@ pub struct Purchase<'info> {
     pub system_program: Program<'info, System>,
 }
 
-#[event]
-pub struct RefundEvent {
-    pub buyer: Pubkey,            // User's wallet public key
-    pub refund_amount: u64,       // Number of tokens refunded
-    pub refund_sol: u64,          // Amount of SOL refunded
-    pub remaining_tokens: u64,    // Remaining refundable tokens
-    pub total_refund_tokens: u64, // Total tokens refunded so far
-    pub total_refunded_sol: u64,  // Total SOL refunded so far
-}
-
 #[derive(Accounts)]
 pub struct Refund<'info> {
     #[account(mut)]
@@ -755,10 +719,54 @@ pub struct SetPauseState<'info> {
     pub authority: Signer<'info>, // Admin account
 }
 
+#[derive(Accounts)]
+pub struct BatchDistributeAirdrops<'info> {
+    #[account(mut)]
+    pub authority: Signer<'info>,
+    #[account(mut)]
+    pub recipients: Vec<Account<'info, TokenAccount>>, // Supports batch recipients
+    pub system_program: Program<'info, System>,
+}
+
 #[derive(AnchorDeserialize, AnchorSerialize, Clone)]
 pub struct UserDistribution {
     pub user_vesting_index: usize, // Index in the remaining accounts array
     pub airdrop_index: u8,         // Index of the current airdrop percentage
+}
+
+// Define the PurchaseEvent at the top of your contract
+#[event]
+pub struct PurchaseEvent {
+    pub buyer: Pubkey,            // Buyer's wallet public key
+    pub amount: u64,              // Number of tokens purchased
+    pub cost_in_sol: Option<u64>, // Cost in SOL equivalent (in lamports, if applicable)
+    pub timestamp: i64,
+}
+
+// Utility function to derive the program's PDA
+#[event]
+pub struct PauseStateChanged {
+    pub paused: bool, // Whether the presale is paused
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct PresaleParamsUpdated {
+    pub new_price: Option<u64>,
+    pub new_min_buy_amount: Option<u64>,
+    pub new_max_buy_amount: Option<u64>,
+    pub new_hard_cap: Option<u64>,
+    pub timestamp: i64,
+}
+
+#[event]
+pub struct RefundEvent {
+    pub buyer: Pubkey,            // User's wallet public key
+    pub refund_amount: u64,       // Number of tokens refunded
+    pub refund_sol: u64,          // Amount of SOL refunded
+    pub remaining_tokens: u64,    // Remaining refundable tokens
+    pub total_refund_tokens: u64, // Total tokens refunded so far
+    pub total_refunded_sol: u64,  // Total SOL refunded so far
 }
 
 #[event]
@@ -806,15 +814,6 @@ pub fn claim(ctx: Context<Claim>) -> ProgramResult {
     } else {
         Err(ErrorCode::NoTokensToClaim.into())
     }
-}
-
-#[derive(Accounts)]
-pub struct BatchDistributeAirdrops<'info> {
-    #[account(mut)]
-    pub authority: Signer<'info>,
-    #[account(mut)]
-    pub recipients: Vec<Account<'info, TokenAccount>>, // Supports batch recipients
-    pub system_program: Program<'info, System>,
 }
 
 pub fn distribute_airdrops_batch(ctx: Context<BatchDistributeAirdrops>, amount: u64) -> Result<()> {
