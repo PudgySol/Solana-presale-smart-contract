@@ -3,7 +3,7 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_error::ProgramError;
 use pyth_sdk_solana::load_price_feed_from_account_info;
 use solana_program::entrypoint::ProgramResult;
-use anchor_spl::token_interface::Transfer;
+use anchor_spl::token_interface::{Transfer, TokenAccount};
 use anchor_spl::token::Token;
 
 declare_id!("ACAzRjWNaiDHnVRUKYXz2PHSNPFNmLrpKCjAAcvJt1va");
@@ -434,36 +434,6 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    // Helper to calculate vested amount
-    fn calculate_vested_amount(
-        total_amount: u64,
-        start_time: i64,
-        vesting_period: i64,
-        vesting_interval: i64,
-        current_time: i64,
-    ) -> u64 {
-        if current_time < start_time {
-            return 0;
-        }
-        let elapsed_time = current_time - start_time;
-
-        if vesting_period == 0 || vesting_interval == 0 {
-            return 0;
-        }
-
-        let vested_intervals = elapsed_time / vesting_interval;
-        let total_intervals = vesting_period / vesting_interval;
-
-        if total_intervals == 0 {
-            return 0;
-        }
-
-        // Calculate the proportion of vested tokens
-        let vested_amount =
-            (total_amount as u128 * vested_intervals as u128 / total_intervals as u128) as u64;
-        vested_amount
-    }
-
     pub fn calculate_claimable(ctx: Context<CalculateClaimable>) -> Result<u64> {
         let user_vesting = &ctx.accounts.user_vesting;
         let clock = Clock::get()?;
@@ -586,75 +556,11 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    #[error_code]
-    pub enum ErrorCode {
-        #[msg("The sale is not currently active.")]
-        SaleNotActive,
-        #[msg("No tokens available for claiming.")]
-        NoTokensToClaim,
-        #[msg("The presale has not ended.")]
-        PresaleNotEnded,
-        #[msg("Refunds are not available.")]
-        RefundNotAvailable,
-        #[msg("Insufficient unclaimed tokens for refund.")]
-        InsufficientRefundBalance,
-        #[msg("Program does not have enough SOL for the refund.")]
-        InsufficientProgramBalance,
-        #[msg("All airdrops have been completed.")]
-        AirdropCompleted,
-        #[msg("Invalid vesting parameters.")]
-        InvalidVestingParameters,
-        #[msg("Purchase amount exceeds maximum allocation.")]
-        AllocationExceeded,
-        #[msg("Insufficient funds for purchase.")]
-        InsufficientFunds,
-        #[msg("Math overflow occurred.")]
-        MathOverflow,
-        #[msg("Math overflow occurred.")]
-        BadMath,
-        #[msg("Invalid payment method.")]
-        InvalidPaymentMethod,
-        #[msg("Price feed is unavailable.")]
-        PriceFeedUnavailable,
-        #[msg("Airdrop configuration error.")]
-        AirdropConfigurationError,
-        #[msg("Purchase amount is below the minimum buy amount.")]
-        BelowMinimumPurchase,
-        #[msg("Purchase amount exceeds the maximum allowed for this user.")]
-        ExceedsMaximumPurchase,
-        #[msg("Presale hard cap has been reached.")]
-        HardCapReached,
-        #[msg("Unauthorized access.")]
-        UnauthorizedAccess,
-        #[msg("Invalid parameter value.")]
-        InvalidParameterValue,
-        #[msg("Invalid discount percentage. Must be <= 100.")]
-        InvalidDiscountPercentage,
-        #[msg("Invalid price. Price must be greater than zero.")]
-        InvalidPrice,
-        #[msg("Batch size exceeds the maximum limit.")]
-        BatchTooLarge,
-        #[msg("Invalid user account index.")]
-        InvalidUserAccountIndex,
-        #[msg("Presale is currently paused.")]
-        PresalePaused,
-    }
-
 }
 
 // Utility function: Place this outside the #[program] module
 pub fn derive_presale_pda(program_id: &Pubkey, seed: &[u8]) -> Pubkey {
     Pubkey::find_program_address(&[seed], program_id).0
-}
-
-#[program]
-pub mod test_anc {
-    use super::*;
-
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        msg!("Program initialized!");
-        Ok(())
-    }
 }
 
 pub fn calculate_sol_price(
@@ -909,4 +815,96 @@ pub struct BatchDistributeAirdrops<'info> {
     #[account(mut)]
     pub recipients: Vec<Account<'info, TokenAccount>>, // Supports batch recipients
     pub system_program: Program<'info, System>,
+}
+
+pub fn distribute_airdrops_batch(ctx: Context<BatchDistributeAirdrops>, amount: u64) -> Result<()> {
+    for recipient in &ctx.accounts.recipients {
+        // Logic for distributing tokens
+        msg!("Distributing {} tokens to recipient {:?}", amount, recipient.key());
+    }
+    Ok(())
+}
+
+// Helper to calculate vested amount
+pub fn calculate_vested_amount(
+    total_amount: u64,
+    start_time: i64,
+    vesting_period: i64,
+    vesting_interval: i64,
+    current_time: i64,
+) -> u64 {
+    if current_time < start_time {
+        return 0;
+    }
+    let elapsed_time = current_time - start_time;
+
+    if vesting_period == 0 || vesting_interval == 0 {
+        return 0;
+    }
+
+    let vested_intervals = elapsed_time / vesting_interval;
+    let total_intervals = vesting_period / vesting_interval;
+
+    if total_intervals == 0 {
+        return 0;
+    }
+
+    // Calculate the proportion of vested tokens
+    let vested_amount =
+        (total_amount as u128 * vested_intervals as u128 / total_intervals as u128) as u64;
+    vested_amount
+}
+
+#[error_code]
+pub enum ErrorCode {
+    #[msg("The sale is not currently active.")]
+    SaleNotActive,
+    #[msg("No tokens available for claiming.")]
+    NoTokensToClaim,
+    #[msg("The presale has not ended.")]
+    PresaleNotEnded,
+    #[msg("Refunds are not available.")]
+    RefundNotAvailable,
+    #[msg("Insufficient unclaimed tokens for refund.")]
+    InsufficientRefundBalance,
+    #[msg("Program does not have enough SOL for the refund.")]
+    InsufficientProgramBalance,
+    #[msg("All airdrops have been completed.")]
+    AirdropCompleted,
+    #[msg("Invalid vesting parameters.")]
+    InvalidVestingParameters,
+    #[msg("Purchase amount exceeds maximum allocation.")]
+    AllocationExceeded,
+    #[msg("Insufficient funds for purchase.")]
+    InsufficientFunds,
+    #[msg("Math overflow occurred.")]
+    MathOverflow,
+    #[msg("Math overflow occurred.")]
+    BadMath,
+    #[msg("Invalid payment method.")]
+    InvalidPaymentMethod,
+    #[msg("Price feed is unavailable.")]
+    PriceFeedUnavailable,
+    #[msg("Airdrop configuration error.")]
+    AirdropConfigurationError,
+    #[msg("Purchase amount is below the minimum buy amount.")]
+    BelowMinimumPurchase,
+    #[msg("Purchase amount exceeds the maximum allowed for this user.")]
+    ExceedsMaximumPurchase,
+    #[msg("Presale hard cap has been reached.")]
+    HardCapReached,
+    #[msg("Unauthorized access.")]
+    UnauthorizedAccess,
+    #[msg("Invalid parameter value.")]
+    InvalidParameterValue,
+    #[msg("Invalid discount percentage. Must be <= 100.")]
+    InvalidDiscountPercentage,
+    #[msg("Invalid price. Price must be greater than zero.")]
+    InvalidPrice,
+    #[msg("Batch size exceeds the maximum limit.")]
+    BatchTooLarge,
+    #[msg("Invalid user account index.")]
+    InvalidUserAccountIndex,
+    #[msg("Presale is currently paused.")]
+    PresalePaused,
 }
