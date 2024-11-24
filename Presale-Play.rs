@@ -8,7 +8,7 @@ use solana_program::{
     pubkey::Pubkey,
 };
 
-declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
+declare_id!("ACAzRjWNaiDHnVRUKYXz2PHSNPFNmLrpKCjAAcvJt1va");
 
 #[program]
 pub mod fam_presale_contract {
@@ -471,21 +471,6 @@ pub mod fam_presale_contract {
             )
         }
     }
-
-    impl<'info> BatchDistributeAirdrops<'info> {
-        pub fn into_transfer_context(
-            &self,
-            destination_account: Account<'info, TokenAccount>,
-        ) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
-            let cpi_accounts = Transfer {
-                from: self.presale_account.to_account_info(),
-                to: destination_account.to_account_info(),
-                authority: self.authority.to_account_info(),
-            };
-            CpiContext::new(self.system_program.to_account_info(), cpi_accounts)
-        }
-    }
-
 
     pub fn update_presale_discount(
         ctx: Context<UpdatePresaleParams>,
