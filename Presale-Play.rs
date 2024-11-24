@@ -510,7 +510,7 @@ pub mod fam_presale_contract {
     }
 
     pub fn distribute_monthly_airdrop(ctx: Context<DistributeAirdrop>) -> Result<()> {
-        let user_vesting = &mut ctx.accounts.user_vesting;
+        let user_vesting = &ctx.accounts.user_vesting;
         let presale_account = &ctx.accounts.presale_account;
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
@@ -687,7 +687,7 @@ pub struct DistributeAirdrop<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
     #[account(mut)]
-    pub presale_account: Account<'info, TokenAccount>,
+    pub presale_account: Account<'info, PresaleAccount>,
     #[account(mut)]
     pub recipient_account: Account<'info, TokenAccount>,
     pub system_program: Program<'info, System>,
@@ -738,6 +738,7 @@ pub struct BatchDistributeAirdrops<'info> {
     pub authority: Signer<'info>,               // The account that signs the transaction
     #[account(mut)]
     pub presale_account: Account<'info, PresaleAccount>,
+    pub user_vesting: Account<'info, TokenAccount>,
     pub system_program: Program<'info, System>, // Required system program
 }
 
