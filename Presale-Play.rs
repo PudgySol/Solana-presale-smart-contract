@@ -1,8 +1,17 @@
 use anchor_lang::prelude::*;
 #[allow(unused_imports)]
 use pyth_sdk_solana::load_price_feed_from_account_info;
-// use solana_program::entrypoint::ProgramResult;
+// use solana_program::entrypoint::Result<()>;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
+use solana_program::{
+    account_info::{next_account_info, AccountInfo},
+    entrypoint,
+    entrypoint::ProgramResult,
+    program::invoke,
+    pubkey::Pubkey,
+    system_instruction,
+    system_program,
+};
 
 declare_id!("ACAzRjWNaiDHnVRUKYXz2PHSNPFNmLrpKCjAAcvJt1va");
 
@@ -23,7 +32,7 @@ pub mod fam_presale_contract {
         vesting_interval: i64,
         airdrop_percentages: Vec<u64>, // Accept airdrop percentages as input
         max_airdrop_elements: u8,      // Accept maximum airdrop elements as input
-    ) -> ProgramResult {
+    ) -> Result<()> {
         // Cap the size of the airdrop_percentages vector (e.g., max 12 elements)
         if airdrop_percentages.len() > max_airdrop_elements.into() {
             return Err(ErrorCode::AirdropConfigurationError.into());
@@ -74,7 +83,7 @@ pub mod fam_presale_contract {
         new_min_buy_amount: Option<u64>,
         new_max_buy_amount: Option<u64>,
         new_hard_cap: Option<u64>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let presale_account = &mut ctx.accounts.presale_account;
 
         // Ensure caller is the authorized admin
@@ -109,7 +118,7 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    pub fn purchase(ctx: Context<Purchase>, amount: u64) -> ProgramResult {
+    pub fn purchase(ctx: Context<Purchase>, amount: u64) -> Result<()> {
         let presale_account = &mut ctx.accounts.presale_account;
         let user_vesting = &mut ctx.accounts.user_vesting;
 
@@ -228,7 +237,7 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    pub fn set_pause_state(ctx: Context<SetPauseState>, paused: bool) -> ProgramResult {
+    pub fn set_pause_state(ctx: Context<SetPauseState>, paused: bool) -> Result<()> {
         let presale_account = &mut ctx.accounts.presale_account;
 
         // Ensure caller is the authorized admin
@@ -255,7 +264,7 @@ pub mod fam_presale_contract {
     pub fn distribute_airdrops_batch(
         ctx: Context<BatchDistributeAirdrops>,
         users: Vec<UserDistribution>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         const MAX_BATCH_SIZE: usize = 50; // Set a limit for batch size
 
         let presale_account = &ctx.accounts.presale_account;
@@ -324,7 +333,7 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    pub fn refund(ctx: Context<Refund>, refund_amount: u64) -> ProgramResult {
+    pub fn refund(ctx: Context<Refund>, refund_amount: u64) -> Result<()> {
         let presale_account = &mut ctx.accounts.presale_account;
         let user_vesting = &mut ctx.accounts.user_vesting;
         let clock = Clock::get()?;
@@ -403,7 +412,7 @@ pub mod fam_presale_contract {
     pub fn update_manual_price_override(
         ctx: Context<UpdateManualPriceOverride>,
         new_price: Option<u64>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let presale_account = &mut ctx.accounts.presale_account;
 
         // Ensure caller is the authorized admin
@@ -465,7 +474,7 @@ pub mod fam_presale_contract {
     pub fn update_presale_discount(
         ctx: Context<UpdatePresaleParams>,
         new_price: Option<u64>,
-    ) -> ProgramResult {
+    ) -> Result<()> {
         let presale_account = &mut ctx.accounts.presale_account;
 
         // Validate and update price directly
@@ -479,7 +488,7 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    pub fn distribute_initial_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
+    pub fn distribute_initial_airdrop(ctx: Context<DistributeAirdrop>) -> Result<()> {
         let user_vesting = &mut ctx.accounts.user_vesting;
         let presale_account = &ctx.accounts.presale_account;
         let clock = Clock::get()?;
@@ -512,7 +521,7 @@ pub mod fam_presale_contract {
         Ok(())
     }
 
-    pub fn distribute_monthly_airdrop(ctx: Context<DistributeAirdrop>) -> ProgramResult {
+    pub fn distribute_monthly_airdrop(ctx: Context<DistributeAirdrop>) -> Result<()> {
         let user_vesting = &mut ctx.accounts.user_vesting;
         let presale_account = &ctx.accounts.presale_account;
         let clock = Clock::get()?;
@@ -603,6 +612,8 @@ pub fn get_price_from_oracle(
 pub struct Initialize<'info> {
     #[account(mut)] // Mark the payer account as mutable
     pub user: Signer<'info>,
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>, 
     #[account(init, payer = user, space = 8 + 64)] // Payer = user
     pub data_account: Account<'info, SomeData>,
     pub system_program: Program<'info, System>, // No need to mark this as mutable
@@ -784,7 +795,7 @@ pub struct ManualPriceOverrideUpdated {
     pub timestamp: i64,         // Time of the update
 }
 
-pub fn claim(ctx: Context<Claim>) -> ProgramResult {
+pub fn claim(ctx: Context<Claim>) -> Result<()> {
     let user_vesting = &mut ctx.accounts.user_vesting;
     let clock = Clock::get()?;
     let current_time = clock.unix_timestamp;
@@ -917,4 +928,6 @@ pub enum ErrorCode {
     InvalidUserAccountIndex,
     #[msg("Presale is currently paused.")]
     PresalePaused,
+    #[msg("Presale timing is Invalid.")]
+    InvalidPresaleTiming,
 }
