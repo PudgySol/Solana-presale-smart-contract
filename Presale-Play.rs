@@ -730,7 +730,7 @@ pub struct BatchDistributeAirdrops<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,
     #[account(mut)]
-    pub recipients: Vec<UncheckedAccount<'info>>, // Use UncheckedAccount for dynamic validation
+    pub recipients: [Account<'info, TokenAccount>; 10], // Fixed size array for 10 recipients
     pub system_program: Program<'info, System>,
 }
 
@@ -823,10 +823,12 @@ pub fn claim(ctx: Context<Claim>) -> ProgramResult {
 }
 
 pub fn distribute_airdrops_batch(ctx: Context<BatchDistributeAirdrops>, amount: u64) -> Result<()> {
-    for recipient_info in &ctx.accounts.recipients {
-        // Validate each recipient as a TokenAccount
-        let recipient: Account<TokenAccount> = Account::try_from(&recipient_info.to_account_info())?;
-        // Perform the token transfer
+    // Loop through the dynamic accounts in ctx.remaining_accounts
+    for account_info in ctx.remaining_accounts.iter() {
+        // Dynamically validate each account as a TokenAccount
+        let recipient: Account<TokenAccount> = Account::try_from(account_info)?;
+
+        // Perform your business logic (e.g., a token transfer)
         msg!(
             "Distributing {} tokens to recipient {}",
             amount,
