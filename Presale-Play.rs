@@ -603,11 +603,11 @@ pub fn get_price_from_oracle(
 
 #[derive(Accounts)]
 pub struct Initialize<'info> {
+    #[account(mut)] // Mark the payer account as mutable
     pub user: Signer<'info>,
-    #[account(init, payer = user, space = 8 + 64)]
-    pub data_account: Account<'info,SomeData, DataAccount>,
-    #[account(mut)]
-    pub system_program: Program<'info, System>,
+    #[account(init, payer = user, space = 8 + 64)] // Payer = user
+    pub data_account: Account<'info, SomeData>,
+    pub system_program: Program<'info, System>, // No need to mark this as mutable
 }
 
 // Example account struct
@@ -619,6 +619,7 @@ pub struct DataAccount {
 #[account]
 pub struct SomeData {
     pub value: String, // Store unsupported fields inside program-defined accounts
+    pub extra_data: [u8; 56], // 56 bytes
 }
 
 #[account]
