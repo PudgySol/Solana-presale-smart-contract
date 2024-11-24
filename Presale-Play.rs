@@ -601,10 +601,24 @@ pub fn get_price_from_oracle(
     Err(ErrorCode::PriceFeedUnavailable.into())
 }
 
+#[derive(Accounts)]
+pub struct Initialize<'info> {
+    pub user: Signer<'info>,
+    #[account(init, payer = user, space = 8 + 64)]
+    pub data_account: Account<'info,SomeData, DataAccount>,
+    #[account(mut)]
+    pub system_program: Program<'info, System>,
+}
+
 // Example account struct
 #[account]
 pub struct DataAccount {
     pub data: u64,
+}
+
+#[account]
+pub struct SomeData {
+    pub value: String, // Store unsupported fields inside program-defined accounts
 }
 
 #[account]
@@ -635,15 +649,6 @@ pub struct PresaleAccount {
     pub authority: Pubkey,                  // Admin authority key
     pub manual_price_override: Option<u64>, // Optional manual price in USD cents
     pub paused: bool,                       // Whether the presale is paused
-}
-
-#[derive(Accounts)]
-pub struct Initialize<'info> {
-    #[account(init, payer = user, space = 8 + 40)]
-    pub data_account: Account<'info, DataAccount>,
-    #[account(mut)]
-    pub user: Signer<'info>,
-    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
