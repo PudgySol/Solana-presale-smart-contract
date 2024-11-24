@@ -3,8 +3,8 @@ use anchor_lang::prelude::*;
 use anchor_lang::solana_program::program_error::ProgramError;
 use pyth_sdk_solana::load_price_feed_from_account_info;
 use solana_program::entrypoint::ProgramResult;
-use anchor_spl::token_interface::{Transfer, TokenAccount};
-use anchor_spl::token::Token;
+// use anchor_spl::token_interface::{Transfer, TokenAccount};
+use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 
 declare_id!("ACAzRjWNaiDHnVRUKYXz2PHSNPFNmLrpKCjAAcvJt1va");
 
@@ -566,7 +566,7 @@ pub fn calculate_sol_price(
     amount: u64,
     price: u64,
     sol_price_in_usd: u64,
-) -> Result<u64, ProgramError> {
+) -> Result<u64> {
     amount
         .checked_mul(price)
         .ok_or(ErrorCode::MathOverflow)?
