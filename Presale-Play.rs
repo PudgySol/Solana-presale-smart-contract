@@ -4,16 +4,11 @@ use pyth_sdk_solana::load_price_feed_from_account_info;
 // use solana_program::entrypoint::Result<()>;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use solana_program::{
-    account_info::{next_account_info, AccountInfo},
-    entrypoint,
-    entrypoint::ProgramResult,
-    program::invoke,
+    account_info::AccountInfo,
     pubkey::Pubkey,
-    system_instruction,
-    system_program,
 };
 
-declare_id!("ACAzRjWNaiDHnVRUKYXz2PHSNPFNmLrpKCjAAcvJt1va");
+declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
 
 #[program]
 pub mod fam_presale_contract {
@@ -72,7 +67,10 @@ pub mod fam_presale_contract {
         presale_account.cliff_period = cliff_period;
         presale_account.vesting_period = vesting_period;
         presale_account.vesting_interval = vesting_interval;
-        presale_account.airdrop_percentages = airdrop_percentages;
+        presale_account.airdrop_percentages = airdrop_percentages
+            .iter()
+            .map(|&x| x as u8) 
+            .collect();
 
         Ok(())
     }
@@ -224,14 +222,17 @@ pub mod fam_presale_contract {
             .buyer
             .to_account_info()
             .try_borrow_mut_lamports()? -= total_cost_in_sol;
-        **program_pda.try_borrow_mut_lamports()? += total_cost_in_sol;
+
+        let pda_account_info = ctx.accounts.program_pda.to_account_info();
+        **pda_account_info.try_borrow_mut_lamports()? += total_cost_in_sol;
+
 
         // Emit event
         emit!(PurchaseEvent {
+            presale_account: presale_account.key(), // Reference the public key of the account
             buyer: ctx.accounts.buyer.key(),
-            amount,
-            cost_in_sol: total_cost_in_sol,
-            timestamp: current_time,
+            cost_in_sol: Some(total_cost_in_sol),   // Wrap total_cost_in_sol in Some
+            timestamp: Clock::get()?.unix_timestamp // Example for timestamp, adjust as needed
         });
 
         Ok(())
@@ -267,7 +268,7 @@ pub mod fam_presale_contract {
     ) -> Result<()> {
         const MAX_BATCH_SIZE: usize = 50; // Set a limit for batch size
 
-        let presale_account = &ctx.accounts.presale_account;
+        let presale_account = &mut ctx.accounts.presale_account;
         let clock = Clock::get()?;
         let current_time = clock.unix_timestamp;
 
@@ -470,6 +471,21 @@ pub mod fam_presale_contract {
             )
         }
     }
+
+    impl<'info> BatchDistributeAirdrops<'info> {
+        pub fn into_transfer_context(
+            &self,
+            destination_account: Account<'info, TokenAccount>,
+        ) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+            let cpi_accounts = Transfer {
+                from: self.presale_account.to_account_info(),
+                to: destination_account.to_account_info(),
+                authority: self.authority.to_account_info(),
+            };
+            CpiContext::new(self.system_program.to_account_info(), cpi_accounts)
+        }
+    }
+
 
     pub fn update_presale_discount(
         ctx: Context<UpdatePresaleParams>,
@@ -704,14 +720,22 @@ pub struct DistributeAirdrop<'info> {
 }
 
 #[derive(Accounts)]
+pub struct SomeContext<'info> {
+    #[account(mut)]
+    pub program_pda: UncheckedAccount<'info>, // Must be mutable to modify lamports
+}
+
+#[derive(Accounts)]
 pub struct Purchase<'info> {
     #[account(mut)]
     pub presale_account: Account<'info, PresaleAccount>,
     #[account(mut)]
-    pub user_vesting: Account<'info, UserVesting>,
+    pub user_vesting: Account<'info, UserVesting>, // Example, replace with your actual accounts
     #[account(mut)]
-    pub buyer: Signer<'info>,
-    pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle account for SOL/USD price
+    pub buyer: Signer<'info>, // Buyer of the presale
+    #[account(mut)]
+    pub program_pda: UncheckedAccount<'info>, // Add the missing field
+    pub sol_to_usd_oracle: AccountInfo<'info>, // Oracle for SOL to USD conversion
     pub system_program: Program<'info, System>,
 }
 
@@ -738,6 +762,8 @@ pub struct SetPauseState<'info> {
 pub struct BatchDistributeAirdrops<'info> {
     #[account(mut)]
     pub authority: Signer<'info>,               // The account that signs the transaction
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>,
     pub system_program: Program<'info, System>, // Required system program
 }
 
@@ -750,8 +776,8 @@ pub struct UserDistribution {
 // Define the PurchaseEvent at the top of your contract
 #[event]
 pub struct PurchaseEvent {
+    pub presale_account: Pubkey,
     pub buyer: Pubkey,            // Buyer's wallet public key
-    pub amount: u64,              // Number of tokens purchased
     pub cost_in_sol: Option<u64>, // Cost in SOL equivalent (in lamports, if applicable)
     pub timestamp: i64,
 }
