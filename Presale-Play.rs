@@ -685,10 +685,12 @@ pub struct Claim<'info> {
 #[derive(Accounts)]
 pub struct DistributeAirdrop<'info> {
     #[account(mut)]
-    pub user_vesting: Account<'info, UserVesting>,
+    pub authority: Signer<'info>,
     #[account(mut)]
-    pub presale_account: Account<'info, PresaleAccount>,
-    pub token_program: Program<'info, Token>,
+    pub presale_account: Account<'info, TokenAccount>,
+    #[account(mut)]
+    pub recipient_account: Account<'info, TokenAccount>,
+    pub system_program: Program<'info, System>,
 }
 
 #[derive(Accounts)]
@@ -814,6 +816,17 @@ impl<'info> BatchDistributeAirdrops<'info> {
         let cpi_accounts = Transfer {
             from: self.presale_account.to_account_info(),
             to: destination_account.to_account_info(),
+            authority: self.authority.to_account_info(),
+        };
+        CpiContext::new(self.system_program.to_account_info(), cpi_accounts)
+    }
+}
+
+impl<'info> DistributeAirdrop<'info> {
+    pub fn into_transfer_context(&self) -> CpiContext<'_, '_, '_, 'info, Transfer<'info>> {
+        let cpi_accounts = Transfer {
+            from: self.presale_account.to_account_info(),
+            to: self.recipient_account.to_account_info(),
             authority: self.authority.to_account_info(),
         };
         CpiContext::new(self.system_program.to_account_info(), cpi_accounts)
