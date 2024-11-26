@@ -21,13 +21,16 @@ pub mod presale_vesting {
         admin: Pubkey,
         bump: u8,
         public_sale_price: u64,
-        max_tokens: u64, // Add the max_tokens parameter
+        max_tokens: u64,
+        max_sol: u64, // Add SOL hard cap
     ) -> Result<()> {
         let presale = &mut ctx.accounts.presale_account;
         presale.token_mint = token_mint;
         presale.admin = admin;
         presale.total_tokens_allocated = 0;
-        presale.max_tokens = max_tokens; // Set the maximum token cap
+        presale.max_tokens = max_tokens;
+        presale.total_sol_collected = 0; // Initialize total SOL collected
+        presale.max_sol = max_sol; // Set the SOL hard cap
         presale.is_closed = false;
         presale.bump = bump; // Save the bump seed
         presale.public_sale_price = public_sale_price; // Set the public sale price
@@ -47,21 +50,25 @@ pub mod presale_vesting {
         let tokens_to_allocate = lamports_paid / discounted_price; // Tokens = lamports paid / discounted price
         require!(tokens_to_allocate > 0, CustomError::InvalidContribution);
 
-        // Ensure the contribution does not exceed the maximum token cap
-        let new_total = presale.total_tokens_allocated + tokens_to_allocate;
-        require!(new_total <= presale.max_tokens, CustomError::PresaleLimitReached);
+        // Ensure the total SOL collected does not exceed the cap
+        let remaining_sol_cap = presale.max_sol - presale.total_sol_collected;
+        require!(lamports_paid <= remaining_sol_cap, CustomError::PresaleLimitReached);
 
-        // Transfer lamports from contributor to admin wallet (SOL payment)
-        **ctx.accounts.admin_wallet.to_account_info().try_borrow_mut_lamports()? += lamports_paid;
-        **ctx.accounts.contributor.to_account_info().try_borrow_mut_lamports()? -= lamports_paid;
+        // Transfer only the portion of lamports that fits within the SOL cap
+        let lamports_to_accept = lamports_paid.min(remaining_sol_cap);
+        **ctx.accounts.admin_wallet.to_account_info().try_borrow_mut_lamports()? += lamports_to_accept;
+        **ctx.accounts.contributor.to_account_info().try_borrow_mut_lamports()? -= lamports_to_accept;
+
+        // Update the total SOL collected
+        presale.total_sol_collected += lamports_to_accept;
 
         // Update allocation account with the contributed amount
         let allocation = &mut ctx.accounts.allocation_account;
-        allocation.amount += tokens_to_allocate; // Allocate tokens
+        allocation.amount += lamports_to_accept / discounted_price; // Allocate tokens
         allocation.cliff_timestamp = presale.cliff_timestamp;
         allocation.vesting_end_timestamp = presale.vesting_end_timestamp;
 
-        presale.total_tokens_allocated += tokens_to_allocate; // Update total allocated tokens
+        presale.total_tokens_allocated += lamports_to_accept / discounted_price;
 
         Ok(())
     }
@@ -322,7 +329,9 @@ pub struct PresaleAccount {
     pub token_mint: Pubkey,              // Token mint address
     pub admin: Pubkey,                  // Admin address
     pub total_tokens_allocated: u64,    // Total tokens allocated so far
-    pub max_tokens: u64,                // Maximum tokens allowed in the presale (new field)
+    pub max_tokens: u64,                // Maximum tokens allowed in the presale
+    pub total_sol_collected: u64,       // Total SOL collected so far (new field)
+    pub max_sol: u64,                   // Maximum SOL allowed to be collected (new field)
     pub cliff_timestamp: u64,           // Cliff timestamp for vesting
     pub vesting_end_timestamp: u64,     // Vesting end timestamp
     pub is_closed: bool,                // Whether the presale is closed
@@ -356,6 +365,6 @@ pub enum CustomError {
     InsufficientBalance,
     #[msg("Invalid contribution. You must contribute enough to purchase at least one token.")]
     InvalidContribution,
-    #[msg("The presale token limit has been reached.")]
-    PresaleLimitReached, // New error for exceeding token cap
+    #[msg("The presale SOL limit has been reached.")]
+    PresaleLimitReached,
 }
