@@ -155,6 +155,22 @@ pub mod presale_vesting {
         Ok(())
     }
 
+    pub fn update_presale_price(ctx: Context<UpdatePresalePrice>, new_public_sale_price: u64) -> Result<()> {
+        let presale = &mut ctx.accounts.presale_account;
+
+        // Ensure the presale is still active
+        require!(!presale.is_closed, CustomError::PresaleClosed);
+
+        // Ensure only the admin can update the price
+        require!(ctx.accounts.admin.key() == presale.admin, CustomError::Unauthorized);
+
+        // Update the public sale price
+        presale.public_sale_price = new_public_sale_price;
+
+        Ok(())
+    }
+
+
     pub fn refund_tokens(ctx: Context<RefundTokens>, token_amount: u64) -> Result<()> {
         let allocation = &mut ctx.accounts.allocation_account;
         let presale = &mut ctx.accounts.presale_account;
@@ -211,6 +227,14 @@ pub struct InitializePresale<'info> {
     pub admin: Signer<'info>,
     #[account(address = system_program::ID)]
     pub system_program: Program<'info, System>,
+}
+
+#[derive(Accounts)]
+pub struct UpdatePresalePrice<'info> {
+    #[account(mut)]
+    pub presale_account: Account<'info, PresaleAccount>, // Presale state
+    #[account(signer)]
+    pub admin: AccountInfo<'info>, // Admin must sign the transaction
 }
 
 #[derive(Accounts)]
