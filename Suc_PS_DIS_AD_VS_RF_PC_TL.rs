@@ -16,22 +16,23 @@ pub mod presale_vesting {
     use super::*;
 
     pub fn initialize_presale(
-        ctx: Context<InitializePresale>, 
-        token_mint: Pubkey, 
-        admin: Pubkey, 
-        bump: u8, 
-        public_sale_price: u64 // Add public sale price
+        ctx: Context<InitializePresale>,
+        token_mint: Pubkey,
+        admin: Pubkey,
+        bump: u8,
+        public_sale_price: u64,
+        max_tokens: u64, // Add the max_tokens parameter
     ) -> Result<()> {
         let presale = &mut ctx.accounts.presale_account;
         presale.token_mint = token_mint;
         presale.admin = admin;
         presale.total_tokens_allocated = 0;
+        presale.max_tokens = max_tokens; // Set the maximum token cap
         presale.is_closed = false;
         presale.bump = bump; // Save the bump seed
         presale.public_sale_price = public_sale_price; // Set the public sale price
         Ok(())
     }
-
 
     pub fn contribute(ctx: Context<Contribute>, lamports_paid: u64) -> Result<()> {
         let presale = &mut ctx.accounts.presale_account;
@@ -46,6 +47,10 @@ pub mod presale_vesting {
         let tokens_to_allocate = lamports_paid / discounted_price; // Tokens = lamports paid / discounted price
         require!(tokens_to_allocate > 0, CustomError::InvalidContribution);
 
+        // Ensure the contribution does not exceed the maximum token cap
+        let new_total = presale.total_tokens_allocated + tokens_to_allocate;
+        require!(new_total <= presale.max_tokens, CustomError::PresaleLimitReached);
+
         // Transfer lamports from contributor to admin wallet (SOL payment)
         **ctx.accounts.admin_wallet.to_account_info().try_borrow_mut_lamports()? += lamports_paid;
         **ctx.accounts.contributor.to_account_info().try_borrow_mut_lamports()? -= lamports_paid;
@@ -56,7 +61,7 @@ pub mod presale_vesting {
         allocation.cliff_timestamp = presale.cliff_timestamp;
         allocation.vesting_end_timestamp = presale.vesting_end_timestamp;
 
-        presale.total_tokens_allocated += tokens_to_allocate;
+        presale.total_tokens_allocated += tokens_to_allocate; // Update total allocated tokens
 
         Ok(())
     }
@@ -221,7 +226,11 @@ pub mod presale_vesting {
 
 #[derive(Accounts)]
 pub struct InitializePresale<'info> {
-    #[account(init, payer = admin, space = 8 + 32 + 32 + 8 + 8 + 1)]
+    #[account(
+        init,
+        payer = admin,
+        space = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 1 // Add 8 bytes for the max_tokens field
+    )]
     pub presale_account: Account<'info, PresaleAccount>,
     #[account(mut)]
     pub admin: Signer<'info>,
@@ -312,7 +321,8 @@ pub struct ClosePresale<'info> {
 pub struct PresaleAccount {
     pub token_mint: Pubkey,              // Token mint address
     pub admin: Pubkey,                  // Admin address
-    pub total_tokens_allocated: u64,    // Total tokens allocated
+    pub total_tokens_allocated: u64,    // Total tokens allocated so far
+    pub max_tokens: u64,                // Maximum tokens allowed in the presale (new field)
     pub cliff_timestamp: u64,           // Cliff timestamp for vesting
     pub vesting_end_timestamp: u64,     // Vesting end timestamp
     pub is_closed: bool,                // Whether the presale is closed
@@ -332,6 +342,8 @@ pub struct AllocationAccount {
 pub enum CustomError {
     #[msg("The presale has already been closed.")]
     PresaleClosed,
+    #[msg("The presale has not started yet.")]
+    PresaleNotStarted,
     #[msg("The cliff period has not been reached yet.")]
     CliffNotReached,
     #[msg("You have no tokens to claim at this time.")]
@@ -339,10 +351,11 @@ pub enum CustomError {
     #[msg("Unauthorized action.")]
     Unauthorized,
     #[msg("Vesting has already started. Refunds are no longer allowed.")]
-    VestingStarted, // New error for refunding after vesting begins
+    VestingStarted,
     #[msg("You do not have enough tokens to refund.")]
-    InsufficientBalance, // New error for insufficient token balance
+    InsufficientBalance,
     #[msg("Invalid contribution. You must contribute enough to purchase at least one token.")]
-    InvalidContribution, // New error variant
-
+    InvalidContribution,
+    #[msg("The presale token limit has been reached.")]
+    PresaleLimitReached, // New error for exceeding token cap
 }
