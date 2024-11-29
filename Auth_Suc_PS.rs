@@ -6,7 +6,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use pyth_sdk_solana::load_price_feed_from_account_info;
 use solana_program::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey};
 
-declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
+declare_id!("Your_Contract");
 
 #[program]
 pub mod presale_vesting {
