@@ -6,7 +6,7 @@ use anchor_spl::associated_token::AssociatedToken;
 use pyth_sdk_solana::load_price_feed_from_account_info;
 use solana_program::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey};
 
-declare_id!("Your_Contract");
+declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
 
 #[program]
 pub mod presale_vesting {
@@ -254,13 +254,13 @@ pub struct InitializePresale<'info> {
         associated_token::mint = token_mint,
         associated_token::authority = presale_account, // PDA owns the token account
     )]
-    pub presale_wallet: Account<'info, TokenAccount>, // Token account to hold presale tokens
-    pub token_mint: Account<'info, Mint>, // Existing token mint
+    pub presale_wallet: Account<'info, TokenAccount>,
+    pub token_mint: Account<'info, Mint>,
     #[account(mut)]
-    pub admin: Signer<'info>, // Admin wallet
+    pub admin: Signer<'info>,
     #[account(address = system_program::ID)]
     pub system_program: Program<'info, System>,
-    pub token_program: Program<'info, Token>, // Token program
+    pub token_program: Program<'info, Token>,
     pub associated_token_program: Program<'info, AssociatedToken>,
     pub rent: Sysvar<'info, Rent>,
 }
