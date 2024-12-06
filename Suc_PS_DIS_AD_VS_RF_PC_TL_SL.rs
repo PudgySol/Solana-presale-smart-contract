@@ -9,7 +9,7 @@ use solana_program::{
     clock::Clock,
 };
 
-declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
+declare_id!("Your Program ID");
 
 #[program]
 pub mod presale_vesting {
