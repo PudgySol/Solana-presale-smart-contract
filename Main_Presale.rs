@@ -181,7 +181,7 @@ async function closePresale(presaleAccountPubkey: PublicKey) {
   console.log("Presale closed successfully!");
 }
 
-// ** Example Workflow **
+              
 (async () => {
   try {
     console.log("Initializing presale...");
@@ -191,22 +191,7 @@ async function closePresale(presaleAccountPubkey: PublicKey) {
       [Buffer.from("presale"), adminKeypair.publicKey.toBuffer(), TOKEN_MINT.toBuffer()],
       PROGRAM_ID
     );
-
-    // Contributor 1
-    const contributorKeypair1 = Keypair.generate();
-    console.log("Contributor 1 contributing...");
-    await contributeToPresale(presaleAccount, contributorKeypair1, 1_500_000); // 1.5 SOL
-
-    // Contributor 2
-    const contributorKeypair2 = Keypair.generate();
-    console.log("Contributor 2 contributing...");
-    await contributeToPresale(presaleAccount, contributorKeypair2, 2_500_000); // 2.5 SOL
-
-    // Contributor 1 claims tokens
-    const presaleWallet = new PublicKey("REPLACE_WITH_PRESALE_WALLET_ADDRESS");
-    console.log("Contributor 1 claiming tokens...");
-    await claimTokens(presaleAccount, contributorKeypair1, presaleWallet, 1000);
-
+    
     console.log("Closing presale...");
     await closePresale(presaleAccount);
 
