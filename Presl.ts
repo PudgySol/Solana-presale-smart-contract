@@ -16,22 +16,22 @@ const TOKEN_MINT = new PublicKey("13WjtSt6dp9qQFrvcx1ncD2gHSyhNMAqwEqwQkSgpmya")
 // Set up the connection
 const connection = new Connection("https://api.devnet.solana.com", "confirmed");
 
-// Load your Keypair for admin and contributor (same wallet)
-const adminAndContributorKeypair = Keypair.fromSecretKey(
+// Admin wallet
+const adminKeypair = Keypair.fromSecretKey(
   Uint8Array.from([
     // Replace with the secret key for FAMWSk1En5dJkEQrzPf9N1WS5KbXRq6F8sUUJvWq4cL9
   ])
 );
 
 // Load the program IDL
-const idl = require("./idl.json");
+import idl from "./idl.json";
 const program = new anchor.Program(idl, PROGRAM_ID);
 
 /**
  * Helper function to send a transaction to the blockchain.
  */
 async function sendTransaction(transaction: Transaction, signers: Keypair[]) {
-  transaction.feePayer = adminAndContributorKeypair.publicKey;
+  transaction.feePayer = signers[0].publicKey; // Use the first signer as the fee payer
   transaction.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
   await transaction.sign(...signers);
   const txId = await sendAndConfirmTransaction(connection, transaction, signers);
@@ -44,16 +44,15 @@ async function sendTransaction(transaction: Transaction, signers: Keypair[]) {
  */
 async function initializePresale() {
   const [presaleAccount, bump] = await PublicKey.findProgramAddress(
-    [Buffer.from("presale"), adminAndContributorKeypair.publicKey.toBuffer(), TOKEN_MINT.toBuffer()],
+    [Buffer.from("presale"), adminKeypair.publicKey.toBuffer(), TOKEN_MINT.toBuffer()],
     PROGRAM_ID
   );
 
   const transaction = new Transaction();
 
-  // Program instruction to initialize the presale
   const instruction = program.instruction.initializePresale(
     TOKEN_MINT,
-    adminAndContributorKeypair.publicKey,
+    adminKeypair.publicKey,
     bump,
     new anchor.BN(1_000_000), // publicSalePrice
     new anchor.BN(1_000_000), // maxTokens
@@ -61,7 +60,7 @@ async function initializePresale() {
     {
       accounts: {
         presaleAccount: presaleAccount,
-        admin: adminAndContributorKeypair.publicKey,
+        admin: adminKeypair.publicKey,
         tokenMint: TOKEN_MINT,
         systemProgram: SystemProgram.programId,
       },
@@ -71,30 +70,30 @@ async function initializePresale() {
   transaction.add(instruction);
 
   console.log("Initializing presale...");
-  await sendTransaction(transaction, [adminAndContributorKeypair]);
+  await sendTransaction(transaction, [adminKeypair]);
   console.log("Presale initialized successfully!");
 }
 
 /**
- * Contributes lamports to the presale and allocates tokens to the contributor.
+ * Allows anyone to contribute to the presale and dynamically creates an allocation account.
  */
-async function contributeToPresale(presaleAccountPubkey: PublicKey, lamportsPaid: number) {
+async function contributeToPresale(presaleAccountPubkey: PublicKey, contributorKeypair: Keypair, lamportsPaid: number) {
+  // Dynamically derive the contributor's allocation account PDA
   const [allocationAccount, bump] = await PublicKey.findProgramAddress(
-    [Buffer.from("allocation"), adminAndContributorKeypair.publicKey.toBuffer()],
+    [Buffer.from("allocation"), contributorKeypair.publicKey.toBuffer()],
     PROGRAM_ID
   );
 
   const transaction = new Transaction();
 
-  // Program instruction to contribute to the presale
   const instruction = program.instruction.contribute(
-    new anchor.BN(lamportsPaid),
+    new anchor.BN(lamportsPaid), // Amount of SOL contributed
     {
       accounts: {
         presaleAccount: presaleAccountPubkey,
         allocationAccount: allocationAccount,
-        contributor: adminAndContributorKeypair.publicKey,
-        adminWallet: adminAndContributorKeypair.publicKey,
+        contributor: contributorKeypair.publicKey, // Contributor wallet
+        adminWallet: adminKeypair.publicKey, // Admin wallet receiving SOL
         tokenProgram: TOKEN_PROGRAM_ID,
         systemProgram: SystemProgram.programId,
       },
@@ -103,23 +102,22 @@ async function contributeToPresale(presaleAccountPubkey: PublicKey, lamportsPaid
 
   transaction.add(instruction);
 
-  console.log("Contributing to presale...");
-  await sendTransaction(transaction, [adminAndContributorKeypair]);
-  console.log(`Contributed ${lamportsPaid} lamports successfully!`);
+  console.log(`Contributing ${lamportsPaid} lamports to presale...`);
+  await sendTransaction(transaction, [contributorKeypair]); // Contributor wallet signs
+  console.log("Contribution successful!");
 }
 
 /**
- * Claims tokens from the presale based on the vesting schedule.
+ * Allows contributors to claim tokens based on their allocation.
  */
-async function claimTokens(presaleAccountPubkey: PublicKey, presaleWalletPubkey: PublicKey, claimableNow: number) {
+async function claimTokens(presaleAccountPubkey: PublicKey, contributorKeypair: Keypair, presaleWalletPubkey: PublicKey, claimableNow: number) {
   const [allocationAccount, bump] = await PublicKey.findProgramAddress(
-    [Buffer.from("allocation"), adminAndContributorKeypair.publicKey.toBuffer()],
+    [Buffer.from("allocation"), contributorKeypair.publicKey.toBuffer()],
     PROGRAM_ID
   );
 
   const transaction = new Transaction();
 
-  // Program instruction to claim tokens
   const instruction = program.instruction.claimTokens(
     new anchor.BN(claimableNow),
     {
@@ -127,7 +125,7 @@ async function claimTokens(presaleAccountPubkey: PublicKey, presaleWalletPubkey:
         presaleAccount: presaleAccountPubkey,
         allocationAccount: allocationAccount,
         presaleWallet: presaleWalletPubkey,
-        contributorWallet: adminAndContributorKeypair.publicKey,
+        contributorWallet: contributorKeypair.publicKey,
         tokenProgram: TOKEN_PROGRAM_ID,
       },
     }
@@ -136,7 +134,7 @@ async function claimTokens(presaleAccountPubkey: PublicKey, presaleWalletPubkey:
   transaction.add(instruction);
 
   console.log(`Claiming ${claimableNow} tokens...`);
-  await sendTransaction(transaction, [adminAndContributorKeypair]);
+  await sendTransaction(transaction, [contributorKeypair]); // Contributor signs the transaction
   console.log("Tokens claimed successfully!");
 }
 
@@ -146,12 +144,11 @@ async function claimTokens(presaleAccountPubkey: PublicKey, presaleWalletPubkey:
 async function closePresale(presaleAccountPubkey: PublicKey) {
   const transaction = new Transaction();
 
-  // Program instruction to close the presale
   const instruction = program.instruction.closePresale(
     {
       accounts: {
         presaleAccount: presaleAccountPubkey,
-        admin: adminAndContributorKeypair.publicKey,
+        admin: adminKeypair.publicKey,
       },
     }
   );
@@ -159,7 +156,7 @@ async function closePresale(presaleAccountPubkey: PublicKey) {
   transaction.add(instruction);
 
   console.log("Closing presale...");
-  await sendTransaction(transaction, [adminAndContributorKeypair]);
+  await sendTransaction(transaction, [adminKeypair]);
   console.log("Presale closed successfully!");
 }
 
@@ -170,16 +167,24 @@ async function closePresale(presaleAccountPubkey: PublicKey) {
     await initializePresale();
 
     const [presaleAccount] = await PublicKey.findProgramAddress(
-      [Buffer.from("presale"), adminAndContributorKeypair.publicKey.toBuffer(), TOKEN_MINT.toBuffer()],
+      [Buffer.from("presale"), adminKeypair.publicKey.toBuffer(), TOKEN_MINT.toBuffer()],
       PROGRAM_ID
     );
 
-    console.log("Contributing to presale...");
-    await contributeToPresale(presaleAccount, 1_000_000); // Contribute 1,000,000 lamports
+    // Contributor 1
+    const contributorKeypair1 = Keypair.generate();
+    console.log("Contributor 1 contributing...");
+    await contributeToPresale(presaleAccount, contributorKeypair1, 1_500_000); // 1.5 SOL
 
-    console.log("Claiming tokens...");
-    const presaleWallet = new PublicKey("REPLACE_WITH_PRESALE_WALLET_ADDRESS"); // Replace with your presale wallet address
-    await claimTokens(presaleAccount, presaleWallet, 1000); // Claim 1000 tokens
+    // Contributor 2
+    const contributorKeypair2 = Keypair.generate();
+    console.log("Contributor 2 contributing...");
+    await contributeToPresale(presaleAccount, contributorKeypair2, 2_500_000); // 2.5 SOL
+
+    // Contributor 1 claims tokens
+    const presaleWallet = new PublicKey("REPLACE_WITH_PRESALE_WALLET_ADDRESS");
+    console.log("Contributor 1 claiming tokens...");
+    await claimTokens(presaleAccount, contributorKeypair1, presaleWallet, 1000);
 
     console.log("Closing presale...");
     await closePresale(presaleAccount);
