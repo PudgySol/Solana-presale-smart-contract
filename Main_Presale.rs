@@ -1,15 +1,12 @@
 use anchor_lang::prelude::*;
 use anchor_lang::system_program;
+use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
+use anchor_spl::associated_token::AssociatedToken;
 #[allow(unused_imports)]
 use pyth_sdk_solana::load_price_feed_from_account_info;
-use anchor_spl::token::{self, Token, TokenAccount, Transfer};
-use solana_program::{
-    account_info::AccountInfo,
-    pubkey::Pubkey,
-    clock::Clock,
-};
+use solana_program::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey};
 
-declare_id!("Your Program ID");
+declare_id!("PROGRAM_ID");
 
 #[program]
 pub mod presale_vesting {
@@ -17,15 +14,15 @@ pub mod presale_vesting {
 
     pub fn initialize_presale(
         ctx: Context<InitializePresale>,
-        token_mint: Pubkey,
+        token_mint: Pubkey, // Pass the existing token mint
         admin: Pubkey,
         bump: u8,
         public_sale_price: u64,
         max_tokens: u64,
-        max_sol: u64, // Add SOL hard cap
+        max_sol: u64,
     ) -> Result<()> {
         let presale = &mut ctx.accounts.presale_account;
-        presale.token_mint = token_mint;
+        presale.token_mint = token_mint; // Store the token mint address
         presale.admin = admin;
         presale.total_tokens_allocated = 0;
         presale.max_tokens = max_tokens;
@@ -52,12 +49,23 @@ pub mod presale_vesting {
 
         // Ensure the total SOL collected does not exceed the cap
         let remaining_sol_cap = presale.max_sol - presale.total_sol_collected;
-        require!(lamports_paid <= remaining_sol_cap, CustomError::PresaleLimitReached);
+        require!(
+            lamports_paid <= remaining_sol_cap,
+            CustomError::PresaleLimitReached
+        );
 
         // Transfer only the portion of lamports that fits within the SOL cap
         let lamports_to_accept = lamports_paid.min(remaining_sol_cap);
-        **ctx.accounts.admin_wallet.to_account_info().try_borrow_mut_lamports()? += lamports_to_accept;
-        **ctx.accounts.contributor.to_account_info().try_borrow_mut_lamports()? -= lamports_to_accept;
+        **ctx
+            .accounts
+            .admin_wallet
+            .to_account_info()
+            .try_borrow_mut_lamports()? += lamports_to_accept;
+        **ctx
+            .accounts
+            .contributor
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= lamports_to_accept;
 
         // Update the total SOL collected
         presale.total_sol_collected += lamports_to_accept;
@@ -76,28 +84,17 @@ pub mod presale_vesting {
     pub fn claim_tokens(ctx: Context<ClaimTokens>, claimable_now: u64) -> Result<()> {
         let allocation = &mut ctx.accounts.allocation_account;
 
-        // Create a longer-lived variable for the presale_account key
-        let presale_account_key = ctx.accounts.presale_account.key();
-
-        // Prepare seeds for signing
-        let seeds = &[
-            b"presale",
-            presale_account_key.as_ref(),
-            &[ctx.accounts.presale_account.bump],
-        ];
-        let signer = &[&seeds[..]];
+        // Ensure enough tokens are available for distribution
+        let authority_wallet_balance = ctx.accounts.authority_wallet.amount;
+        require!(authority_wallet_balance >= claimable_now, CustomError::InsufficientBalance);
 
         // Transfer tokens to the contributor
         let cpi_accounts = Transfer {
-            from: ctx.accounts.presale_wallet.to_account_info(), // Token source
-            to: ctx.accounts.contributor_wallet.to_account_info(), // Token destination
-            authority: ctx.accounts.presale_account.to_account_info(), // Authority
+            from: ctx.accounts.authority_wallet.to_account_info(), // Authority wallet's token account
+            to: ctx.accounts.contributor_wallet.to_account_info(), // Contributor's token account
+            authority: ctx.accounts.admin.to_account_info(), // Admin must sign the transaction
         };
-        let cpi_context = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            signer,
-        );
+        let cpi_context = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
         token::transfer(cpi_context, claimable_now)?;
 
         // Update allocation
@@ -109,79 +106,77 @@ pub mod presale_vesting {
     /// New Airdrop Function for Automated Token Vesting
     pub fn airdrop_tokens(ctx: Context<AirdropTokens>) -> Result<()> {
         let allocation = &mut ctx.accounts.allocation_account;
-        let presale = &ctx.accounts.presale_account;
 
-        // Ensure the presale has ended
+        // Ensure the cliff period has been reached
         let current_time = Clock::get()?.unix_timestamp as u64;
-        require!(current_time >= allocation.cliff_timestamp, CustomError::CliffNotReached);
+        require!(
+            current_time >= allocation.cliff_timestamp,
+            CustomError::CliffNotReached
+        );
 
-        // Calculate claimable tokens based on the vesting schedule
+        // Calculate claimable tokens
         let total_allocation = allocation.amount;
         let upfront_allocation = total_allocation / 10; // 10% upfront
-        let monthly_allocation = total_allocation * 9 / 100; // 9% monthly
+        let monthly_allocation = total_allocation * 9 / 100; // 9% per month
 
-        let months_elapsed = ((current_time - allocation.cliff_timestamp) / (30 * 24 * 60 * 60)) as u64;
+        // Calculate elapsed months since cliff
+        let elapsed_time = current_time.saturating_sub(allocation.cliff_timestamp);
+        let months_elapsed = elapsed_time / (30 * 24 * 60 * 60); // 1 month = 30 days
 
-        let mut claimable_amount = 0;
+        let max_months = 10; // Total vesting period is 10 months
+        let months_to_claim = months_elapsed.min(max_months); // Cap the months to 10
 
-        if months_elapsed == 0 {
-            // If we're at the end of the cliff, release 10% upfront
-            claimable_amount = upfront_allocation;
-        } else if months_elapsed > 0 {
-            // Calculate the total claimable amount based on elapsed months
-            let max_months = 10; // 10 months of vesting
-            let months_to_claim = months_elapsed.min(max_months);
-            claimable_amount = upfront_allocation + (monthly_allocation * months_to_claim);
-        }
+        // Total claimable amount = 10% upfront + (9% * months_elapsed)
+        let mut claimable_amount = upfront_allocation + (monthly_allocation * months_to_claim);
 
-        // Ensure we do not over-distribute tokens
+        // Deduct already claimed tokens
         claimable_amount = claimable_amount.saturating_sub(allocation.claimed_amount);
 
+        // Ensure there are claimable tokens
         require!(claimable_amount > 0, CustomError::NothingToClaim);
 
-        // Prepare seeds for signing
-        let presale_key = presale.key();
-        let seeds = &[
-            b"presale",
-            presale_key.as_ref(),
-            &[presale.bump],
-        ];
-        let signer = &[&seeds[..]];
-
-        // Transfer claimable tokens to the contributor
-        let cpi_accounts = Transfer {
-            from: ctx.accounts.presale_wallet.to_account_info(), // Token source
-            to: ctx.accounts.contributor_wallet.to_account_info(), // Token destination
-            authority: ctx.accounts.presale_account.to_account_info(), // Authority
-        };
-        let cpi_context = CpiContext::new_with_signer(
-            ctx.accounts.token_program.to_account_info(),
-            cpi_accounts,
-            signer,
+        // Ensure the authority wallet has enough tokens
+        let authority_wallet_balance = ctx.accounts.authority_wallet.amount;
+        require!(
+            authority_wallet_balance >= claimable_amount,
+            CustomError::InsufficientBalance
         );
+
+        // Transfer tokens from the authority wallet to the contributor's wallet
+        let cpi_accounts = Transfer {
+            from: ctx.accounts.authority_wallet.to_account_info(), // Authority wallet's token account
+            to: ctx.accounts.contributor_wallet.to_account_info(), // Contributor's token account
+            authority: ctx.accounts.admin.to_account_info(), // Admin signs the transaction
+        };
+        let cpi_context = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
         token::transfer(cpi_context, claimable_amount)?;
 
-        // Update allocation to reflect claimed tokens
+        // Update allocation to reflect the claimed amount
         allocation.claimed_amount += claimable_amount;
 
         Ok(())
     }
 
-    pub fn update_presale_price(ctx: Context<UpdatePresalePrice>, new_public_sale_price: u64) -> Result<()> {
+    pub fn update_presale_price(
+        ctx: Context<UpdatePresalePrice>,
+        new_public_sale_price: u64,
+    ) -> Result<()> {
         let presale = &mut ctx.accounts.presale_account;
 
         // Ensure the presale is still active
         require!(!presale.is_closed, CustomError::PresaleClosed);
 
         // Ensure only the admin can update the price
-        require!(ctx.accounts.admin.key() == presale.admin, CustomError::Unauthorized);
+        require!(
+            ctx.accounts.admin.key() == presale.admin,
+            CustomError::Unauthorized
+        );
 
         // Update the public sale price
         presale.public_sale_price = new_public_sale_price;
 
         Ok(())
     }
-
 
     pub fn refund_tokens(ctx: Context<RefundTokens>, token_amount: u64) -> Result<()> {
         let allocation = &mut ctx.accounts.allocation_account;
@@ -192,18 +187,32 @@ pub mod presale_vesting {
 
         // Ensure the refund is requested before vesting begins
         let current_time = Clock::get()?.unix_timestamp as u64;
-        require!(current_time < allocation.cliff_timestamp, CustomError::VestingStarted);
+        require!(
+            current_time < allocation.cliff_timestamp,
+            CustomError::VestingStarted
+        );
 
         // Ensure the contributor has enough tokens to refund
-        require!(allocation.amount >= token_amount, CustomError::InsufficientBalance);
+        require!(
+            allocation.amount >= token_amount,
+            CustomError::InsufficientBalance
+        );
 
         // Calculate the equivalent refund in lamports
         let discounted_price = presale.public_sale_price * 85 / 100; // 15% discount
         let lamports_to_refund = token_amount * discounted_price;
 
         // Perform the refund (lamports transfer)
-        **ctx.accounts.contributor.to_account_info().try_borrow_mut_lamports()? += lamports_to_refund;
-        **ctx.accounts.presale_wallet.to_account_info().try_borrow_mut_lamports()? -= lamports_to_refund;
+        **ctx
+            .accounts
+            .contributor
+            .to_account_info()
+            .try_borrow_mut_lamports()? += lamports_to_refund;
+        **ctx
+            .accounts
+            .presale_wallet
+            .to_account_info()
+            .try_borrow_mut_lamports()? -= lamports_to_refund;
 
         // Burn or transfer tokens from the contributor back to the presale wallet
         let cpi_accounts = Transfer {
@@ -211,7 +220,8 @@ pub mod presale_vesting {
             to: ctx.accounts.presale_wallet.to_account_info(),       // Token destination
             authority: ctx.accounts.contributor.to_account_info(),   // Contributor's authority
         };
-        let cpi_context = CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
+        let cpi_context =
+            CpiContext::new(ctx.accounts.token_program.to_account_info(), cpi_accounts);
         token::transfer(cpi_context, token_amount)?;
 
         // Update the allocation
@@ -224,7 +234,10 @@ pub mod presale_vesting {
         let presale = &mut ctx.accounts.presale_account;
 
         // Only the admin can close the presale
-        require!(ctx.accounts.admin.key() == presale.admin, CustomError::Unauthorized);
+        require!(
+            ctx.accounts.admin.key() == presale.admin,
+            CustomError::Unauthorized
+        );
         presale.is_closed = true;
 
         Ok(())
@@ -233,16 +246,23 @@ pub mod presale_vesting {
 
 #[derive(Accounts)]
 pub struct InitializePresale<'info> {
-    #[account(
-        init,
-        payer = admin,
-        space = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 1 // Add 8 bytes for the max_tokens field
-    )]
+    #[account(init, payer = admin, space = 8 + 32 + 32 + 8 + 8 + 8 + 8 + 8 + 1)]
     pub presale_account: Account<'info, PresaleAccount>,
+    #[account(
+        init_if_needed,
+        payer = admin,
+        associated_token::mint = token_mint,
+        associated_token::authority = presale_account, // PDA owns the token account
+    )]
+    pub presale_wallet: Account<'info, TokenAccount>,
+    pub token_mint: Account<'info, Mint>,
     #[account(mut)]
     pub admin: Signer<'info>,
     #[account(address = system_program::ID)]
     pub system_program: Program<'info, System>,
+    pub token_program: Program<'info, Token>,
+    pub associated_token_program: Program<'info, AssociatedToken>,
+    pub rent: Sysvar<'info, Rent>,
 }
 
 #[derive(Accounts)]
@@ -277,13 +297,14 @@ pub struct ClaimTokens<'info> {
     #[account(mut)]
     pub presale_account: Account<'info, PresaleAccount>, // Presale state
     #[account(mut)]
-    pub allocation_account: Account<'info, AllocationAccount>, // Allocation state for the contributor
+    pub allocation_account: Account<'info, AllocationAccount>, // Contributor's allocation
     #[account(mut)]
-    pub presale_wallet: Account<'info, TokenAccount>, // Presale token wallet
+    pub authority_wallet: Account<'info, TokenAccount>, // Authority wallet's token account
     #[account(mut)]
-    pub contributor_wallet: Account<'info, TokenAccount>, // Contributor token wallet
+    pub contributor_wallet: Account<'info, TokenAccount>, // Contributor's token account
     #[account(address = token::ID)]
     pub token_program: Program<'info, Token>, // Token program
+    pub admin: Signer<'info>, // Admin must sign for distribution
 }
 
 #[derive(Accounts)]
@@ -293,11 +314,12 @@ pub struct AirdropTokens<'info> {
     #[account(mut)]
     pub allocation_account: Account<'info, AllocationAccount>, // Contributor's allocation
     #[account(mut)]
-    pub presale_wallet: Account<'info, TokenAccount>, // Presale token wallet
+    pub authority_wallet: Account<'info, TokenAccount>, // Authority wallet's token account
     #[account(mut)]
-    pub contributor_wallet: Account<'info, TokenAccount>, // Contributor token wallet
+    pub contributor_wallet: Account<'info, TokenAccount>, // Contributor's token wallet
     #[account(address = token::ID)]
     pub token_program: Program<'info, Token>, // Token program
+    pub admin: Signer<'info>, // Admin must sign the transaction
 }
 
 #[derive(Accounts)]
@@ -326,17 +348,17 @@ pub struct ClosePresale<'info> {
 
 #[account]
 pub struct PresaleAccount {
-    pub token_mint: Pubkey,              // Token mint address
-    pub admin: Pubkey,                  // Admin address
-    pub total_tokens_allocated: u64,    // Total tokens allocated so far
-    pub max_tokens: u64,                // Maximum tokens allowed in the presale
-    pub total_sol_collected: u64,       // Total SOL collected so far (new field)
-    pub max_sol: u64,                   // Maximum SOL allowed to be collected (new field)
-    pub cliff_timestamp: u64,           // Cliff timestamp for vesting
-    pub vesting_end_timestamp: u64,     // Vesting end timestamp
-    pub is_closed: bool,                // Whether the presale is closed
-    pub bump: u8,                       // PDA bump seed
-    pub public_sale_price: u64,         // Token price in public sale (e.g., 1 token = X lamports)
+    pub token_mint: Pubkey,          // Token mint address
+    pub admin: Pubkey,               // Admin address
+    pub total_tokens_allocated: u64, // Total tokens allocated so far
+    pub max_tokens: u64,             // Maximum tokens allowed in the presale
+    pub total_sol_collected: u64,    // Total SOL collected so far (new field)
+    pub max_sol: u64,                // Maximum SOL allowed to be collected (new field)
+    pub cliff_timestamp: u64,        // Cliff timestamp for vesting
+    pub vesting_end_timestamp: u64,  // Vesting end timestamp
+    pub is_closed: bool,             // Whether the presale is closed
+    pub bump: u8,                    // PDA bump seed
+    pub public_sale_price: u64,      // Token price in public sale (e.g., 1 token = X lamports)
 }
 
 #[account]
