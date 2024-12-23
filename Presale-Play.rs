@@ -1,14 +1,14 @@
 use anchor_lang::prelude::*;
 #[allow(unused_imports)]
 use pyth_sdk_solana::load_price_feed_from_account_info;
-// use solana_program::entrypoint::Result<()>;
+// use solana_program::entrypoint::Result<()>; 
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use solana_program::{
     account_info::AccountInfo,
     pubkey::Pubkey,
 };
 
-declare_id!("4UjdrPr1Tv1974XZgLRZ63Wu4XisLRS2rh9K4ChK1wB7");
+declare_id!("CONTRACTADDRESS");
 
 #[program]
 pub mod fam_presale_contract {
