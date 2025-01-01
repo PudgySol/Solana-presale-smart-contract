@@ -1,7 +1,6 @@
 use anchor_lang::prelude::*;
 #[allow(unused_imports)]
 use pyth_sdk_solana::load_price_feed_from_account_info;
-// use solana_program::entrypoint::Result<()>; 
 use anchor_spl::token::{self, Token, TokenAccount, Transfer};
 use solana_program::{
     account_info::AccountInfo,
