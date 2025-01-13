@@ -12,7 +12,6 @@ declare_id!("CONTRACTADDRESS");
 #[program]
 pub mod fam_presale_contract {
     use super::*;
-
     // Initialize presale and vesting parameters
     pub fn initialize(
         ctx: Context<Initialize>,
