@@ -2,9 +2,9 @@ use anchor_lang::prelude::*;
 use anchor_lang::system_program;
 use anchor_spl::token::{self, Token, TokenAccount, Transfer, Mint};
 use anchor_spl::associated_token::AssociatedToken;
-#[allow(unused_imports)]
 use pyth_sdk_solana::load_price_feed_from_account_info;
 use solana_program::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey};
+#[allow(unused_imports)]
 
 declare_id!("CONTRACT");
 
