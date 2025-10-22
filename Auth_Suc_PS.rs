@@ -6,7 +6,7 @@ use pyth_sdk_solana::load_price_feed_from_account_info;
 use solana_program::{account_info::AccountInfo, clock::Clock, pubkey::Pubkey};
 #[allow(unused_imports)]
 
-declare_id!("CONTRACT");
+declare_id!("CONTRACT-ADDRESS");
 
 #[program]
 pub mod presale_vesting {
